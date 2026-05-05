@@ -1,27 +1,61 @@
 // Thin wrapper around `@tauri-apps/api` so the Courvux app calls plain
-// async functions and never touches the IPC plumbing directly. Keeps the
-// surface area small and easy to mock for browser-only previews.
+// async functions and never touches the IPC plumbing directly. v0.2.0:
+// each note is now its own Markdown file with YAML frontmatter rather
+// than a single notes.json blob.
 
 import { invoke } from '@tauri-apps/api/core';
 
 /**
- * Read the persisted notes from disk.
- * Calls Rust `load_notes` command — returns an empty array on first run
- * (no file yet) and on JSON parse errors (corrupted file is rebuilt
- * silently on the next save).
+ * Sidebar payload — id, title, updatedAt for every persisted note.
+ * Body is loaded on demand via `readNote(id)` to keep the list fast
+ * even with hundreds of long notes.
  *
- * @returns {Promise<Array<{ id: number, title: string, body: string, updatedAt: number }>>}
+ * @returns {Promise<Array<{ id: number, title: string, updatedAt: number }>>}
  */
-export const loadNotes = () => invoke('load_notes');
+export const listNotes = () => invoke('list_notes');
 
 /**
- * Persist the full notes array to disk. The Rust side writes atomically
- * via tempfile + rename so a crash mid-write doesn't corrupt the store.
+ * Fetch the full body for a single note. Returns the parsed
+ * frontmatter fields plus the markdown body.
  *
- * @param {Array<{ id: number, title: string, body: string, updatedAt: number }>} notes
+ * @param {number} id
+ * @returns {Promise<{ id: number, title: string, body: string, createdAt: number, updatedAt: number }>}
+ */
+export const readNote = (id) => invoke('read_note', { id });
+
+/**
+ * Persist a note. Returns the new `updatedAt` timestamp the Rust side
+ * stamped on the file so the JS state can sync without a re-read.
+ *
+ * @param {{ id: number, title: string, body: string, createdAt: number }} note
+ * @returns {Promise<number>}
+ */
+export const writeNote = (note) => invoke('write_note', {
+    id: note.id,
+    title: note.title,
+    body: note.body,
+    createdAt: note.createdAt,
+});
+
+/**
+ * Delete a note's `.md` file. No-op if the file is already gone.
+ *
+ * @param {number} id
  * @returns {Promise<void>}
  */
-export const saveNotes = (notes) => invoke('save_notes', { notes });
+export const deleteNote = (id) => invoke('delete_note', { id });
 
-/** Convenience: resolve the data file path so it can be shown in the UI. */
-export const notesPath = () => invoke('notes_path');
+/** Currently active notes directory (custom-picked or default). */
+export const notesDir = () => invoke('get_notes_dir');
+
+/** Default notes directory (<app-data>/courvux-tauri-notepad/notes). */
+export const defaultNotesDir = () => invoke('get_default_notes_dir');
+
+/**
+ * Override the notes directory. Returns the resolved absolute path on
+ * success. Tauri creates the directory if it doesn't exist.
+ */
+export const setNotesDir = (path) => invoke('set_notes_dir', { path });
+
+/** Drop the user override; returns the path of the default location. */
+export const resetNotesDir = () => invoke('reset_notes_dir');

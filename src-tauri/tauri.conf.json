@@ -1,7 +1,7 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
     "productName": "Courvux Notepad",
-    "version": "0.1.0",
+    "version": "0.3.0",
     "identifier": "dev.vanjex.courvux-tauri-notepad",
     "build": {
         "beforeDevCommand": "pnpm dev",
@@ -12,6 +12,7 @@
     "app": {
         "windows": [
             {
+                "label": "main",
                 "title": "Courvux Notepad",
                 "width": 960,
                 "height": 640,
@@ -28,7 +29,7 @@
     },
     "bundle": {
         "active": true,
-        "targets": "all",
+        "targets": ["appimage", "rpm", "deb"],
         "category": "Productivity",
         "shortDescription": "Tiny notepad demo built with Courvux + Tauri.",
         "longDescription": "Notepad demo showcasing the Courvux UI framework running inside Tauri 2 with build-time precompiled template expressions, strict Content-Security-Policy (no unsafe-eval), and Tailwind 4 for styling.",
