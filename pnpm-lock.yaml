@@ -12,8 +12,8 @@ importers:
         specifier: ^2.0.0
         version: 2.11.0
       courvux:
-        specifier: github:vanjexdev/courvux#v0.7.0
-        version: https://codeload.github.com/vanjexdev/courvux/tar.gz/3aa0bc33fc5890ccbadbbc139f76f51621ac61fe
+        specifier: github:vanjexdev/courvux#v0.7.1
+        version: https://codeload.github.com/vanjexdev/courvux/tar.gz/1ab5a705bc641ca19ede57fb9ddcded5797c5ab4
       courvux-precompiler:
         specifier: github:vanjexdev/courvux-precompiler
         version: https://codeload.github.com/vanjexdev/courvux-precompiler/tar.gz/ab3b426e752ab3ee5a98fc258431f867e0bd51b8
@@ -529,9 +529,9 @@ packages:
     version: 0.1.0
     engines: {node: '>=18'}
 
-  courvux@https://codeload.github.com/vanjexdev/courvux/tar.gz/3aa0bc33fc5890ccbadbbc139f76f51621ac61fe:
-    resolution: {tarball: https://codeload.github.com/vanjexdev/courvux/tar.gz/3aa0bc33fc5890ccbadbbc139f76f51621ac61fe}
-    version: 0.7.0
+  courvux@https://codeload.github.com/vanjexdev/courvux/tar.gz/1ab5a705bc641ca19ede57fb9ddcded5797c5ab4:
+    resolution: {tarball: https://codeload.github.com/vanjexdev/courvux/tar.gz/1ab5a705bc641ca19ede57fb9ddcded5797c5ab4}
+    version: 0.7.1
 
   detect-libc@2.1.2:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
@@ -1020,7 +1020,7 @@ snapshots:
 
   courvux-precompiler@https://codeload.github.com/vanjexdev/courvux-precompiler/tar.gz/ab3b426e752ab3ee5a98fc258431f867e0bd51b8: {}
 
-  courvux@https://codeload.github.com/vanjexdev/courvux/tar.gz/3aa0bc33fc5890ccbadbbc139f76f51621ac61fe:
+  courvux@https://codeload.github.com/vanjexdev/courvux/tar.gz/1ab5a705bc641ca19ede57fb9ddcded5797c5ab4:
     dependencies:
       acorn: 8.16.0
       courvux-precompiler: https://codeload.github.com/vanjexdev/courvux-precompiler/tar.gz/ab3b426e752ab3ee5a98fc258431f867e0bd51b8

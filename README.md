@@ -3,13 +3,13 @@
 Notepad demo app showing the [Courvux](https://github.com/vanjexdev/courvux) reactive UI framework running inside [Tauri 2](https://tauri.app/), styled with [Tailwind 4](https://tailwindcss.com/), and shipping with **strict CSP** (`script-src 'self'`, no `unsafe-eval`) thanks to the [`courvux-precompiler`](https://github.com/vanjexdev/courvux-precompiler) Rust → WASM build-time expression compiler.
 
 ![status: demo](https://img.shields.io/badge/status-demo-blue)
-![courvux: 0.7.0](https://img.shields.io/badge/courvux-0.7.0-success)
+![courvux: 0.7.0](https://img.shields.io/badge/courvux-0.7.1-success)
 ![tauri: 2](https://img.shields.io/badge/tauri-2-orange)
 ![license: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ## What it shows
 
-- **Courvux 0.7.0** mounted inside a Tauri WebView, with sidebar list, inline editing, and reactive computed (`wordCount`, `charCount`, `sortedNotes`).
+- **Courvux 0.7.1** mounted inside a Tauri WebView, with sidebar list, inline editing, and reactive computed (`wordCount`, `charCount`, `sortedNotes`).
 - **`courvux-precompile` Vite plugin** active — every template expression is compiled to a JS arrow function at build time, so the runtime never calls `new Function`. The Tauri `tauri.conf.json` ships `script-src 'self'` and the `<meta http-equiv="Content-Security-Policy">` in `index.html` matches; no `unsafe-eval` anywhere.
 - **Tailwind 4** via `@tailwindcss/vite`. Single `@import "tailwindcss"` in `src/style.css`, no config file.
 - **Disk persistence via Tauri commands.** Rust side reads/writes `notes.json` atomically (tempfile + rename) inside the platform's app-data directory. JS side calls `invoke('load_notes')` / `invoke('save_notes', { notes })` through a thin wrapper in `src/tauri.js`.
