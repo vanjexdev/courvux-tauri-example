@@ -1,11 +1,17 @@
-// Library entry — exports the Tauri commands that the JS frontend invokes
-// and registers them on the builder. `main.rs` is just a thin wrapper that
-// calls `run()` so the library form can also be reused for mobile targets.
+// Library entry — Tauri commands the JS frontend invokes, plus a tiny
+// settings store (`config.json`) that persists the user-chosen notes
+// folder so the next launch picks up where they left off.
 //
-// Storage model (v0.2.0+):
-//   <app-data>/courvux-tauri-notepad/notes/<id>.md
+// Storage model (v0.3.0+):
 //
-// Each note file is plain Markdown with a YAML frontmatter block:
+//   <notes_dir>/<id>.md            — one Markdown file per note
+//   <app-data>/courvux-tauri-notepad/config.json
+//                                  — { "notesDir": "/path/the/user/picked" | null }
+//
+// `notes_dir` defaults to `<app-data>/courvux-tauri-notepad/notes/` and can
+// be overridden at runtime via the `set_notes_dir` command (which the UI
+// triggers from a native folder-picker dialog). Each note file is
+// human-editable Markdown with a YAML frontmatter block:
 //
 //   ---
 //   title: My note
@@ -14,29 +20,62 @@
 //   ---
 //
 //   # Body in Markdown.
-//
-// One file per note keeps the storage human-editable (open `.md` in any
-// text editor) and trivially syncable (Dropbox, Syncthing, git). The id
-// is a millisecond timestamp set at creation time and never changes,
-// even if the title is renamed.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{Manager, State};
 
-/// Resolved on startup once and stashed in app state so each command
-/// doesn't re-resolve the platform's data dir. Only `notes_dir` is
-/// queried at runtime; `legacy_json` is consumed by the migration
-/// step before this struct is built, so it doesn't live here.
-struct StoragePath {
-    /// `<app-data>/courvux-tauri-notepad/notes/`
-    notes_dir: PathBuf,
+// ── App state ───────────────────────────────────────────────────────────────
+
+/// All paths resolved once on startup (and again whenever the user picks a
+/// new notes folder). Wrapped in a Mutex so `set_notes_dir` can swap the
+/// active path without restarting the app.
+struct AppState {
+    inner: Mutex<AppStateInner>,
 }
 
-/// What the sidebar shows: id, title, last-modified.
-/// Body is loaded on demand via `read_note`.
+struct AppStateInner {
+    /// The folder where `<id>.md` files live. May be the default location
+    /// or a user-picked one persisted in config.json.
+    notes_dir: PathBuf,
+    /// Default fallback used when the user clicks "Reset to default" or
+    /// when the config doesn't override the location.
+    default_notes_dir: PathBuf,
+    /// `<app-data>/courvux-tauri-notepad/config.json` — never moves.
+    config_path: PathBuf,
+}
+
+// ── Persisted config ────────────────────────────────────────────────────────
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct AppConfig {
+    /// `null` (or missing) means "use the default notes dir". An absolute
+    /// path here overrides it.
+    #[serde(rename = "notesDir", default)]
+    notes_dir: Option<String>,
+}
+
+fn load_config(path: &Path) -> AppConfig {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn save_config(path: &Path, cfg: &AppConfig) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
+    }
+    let raw = serde_json::to_string_pretty(cfg).map_err(|e| format!("encode: {}", e))?;
+    fs::write(path, raw).map_err(|e| format!("write: {}", e))?;
+    Ok(())
+}
+
+// ── Note records ────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NoteSummary {
     id: u64,
@@ -45,7 +84,6 @@ struct NoteSummary {
     updated_at: u64,
 }
 
-/// Full note as the editor consumes it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Note {
     id: u64,
@@ -57,8 +95,6 @@ struct Note {
     updated_at: u64,
 }
 
-/// YAML frontmatter shape. Body lives outside the frontmatter so it
-/// stays unparsed and round-trippable.
 #[derive(Debug, Serialize, Deserialize)]
 struct Frontmatter {
     title: String,
@@ -68,17 +104,16 @@ struct Frontmatter {
     updated_at: u64,
 }
 
-// ── Commands ────────────────────────────────────────────────────────────────
+// ── Note IO commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn list_notes(state: State<'_, StoragePath>) -> Result<Vec<NoteSummary>, String> {
-    let dir = &state.notes_dir;
+fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteSummary>, String> {
+    let dir = state.inner.lock().unwrap().notes_dir.clone();
     if !dir.exists() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    let entries = fs::read_dir(dir).map_err(|e| format!("read dir: {}", e))?;
-    for entry in entries {
+    for entry in fs::read_dir(&dir).map_err(|e| format!("read dir: {}", e))? {
         let entry = entry.map_err(|e| format!("entry: {}", e))?;
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
@@ -86,12 +121,8 @@ fn list_notes(state: State<'_, StoragePath>) -> Result<Vec<NoteSummary>, String>
         }
         let id = match path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) {
             Some(id) => id,
-            // Skip files whose stem isn't a numeric id — they're outside
-            // our schema and probably user-managed.
             None => continue,
         };
-        // Read enough to extract the frontmatter; for short files this is
-        // the whole file anyway.
         let raw = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(err) => {
@@ -113,8 +144,8 @@ fn list_notes(state: State<'_, StoragePath>) -> Result<Vec<NoteSummary>, String>
 }
 
 #[tauri::command]
-fn read_note(state: State<'_, StoragePath>, id: u64) -> Result<Note, String> {
-    let path = note_path(&state.notes_dir, id);
+fn read_note(state: State<'_, AppState>, id: u64) -> Result<Note, String> {
+    let path = state.inner.lock().unwrap().notes_dir.join(format!("{}.md", id));
     let raw = fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let (front, body) = split_frontmatter(&raw);
     let fm: Frontmatter = serde_yaml::from_str(&front).map_err(|e| format!("frontmatter parse: {}", e))?;
@@ -129,24 +160,21 @@ fn read_note(state: State<'_, StoragePath>, id: u64) -> Result<Note, String> {
 
 #[tauri::command]
 fn write_note(
-    state: State<'_, StoragePath>,
+    state: State<'_, AppState>,
     id: u64,
     title: String,
     body: String,
     created_at: u64,
 ) -> Result<u64, String> {
     let updated_at = now_ms();
-    let path = note_path(&state.notes_dir, id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
-    }
+    let dir = state.inner.lock().unwrap().notes_dir.clone();
+    let path = dir.join(format!("{}.md", id));
+    fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
 
     let fm = Frontmatter { title, created_at, updated_at };
     let yaml = serde_yaml::to_string(&fm).map_err(|e| format!("yaml: {}", e))?;
     let payload = format!("---\n{}---\n\n{}", yaml, body);
 
-    // Atomic write: tempfile in same dir + rename → never observe a
-    // partial file mid-write.
     let tmp_path = path.with_extension("md.tmp");
     {
         let mut f = fs::File::create(&tmp_path).map_err(|e| format!("create tmp: {}", e))?;
@@ -158,24 +186,63 @@ fn write_note(
 }
 
 #[tauri::command]
-fn delete_note(state: State<'_, StoragePath>, id: u64) -> Result<(), String> {
-    let path = note_path(&state.notes_dir, id);
+fn delete_note(state: State<'_, AppState>, id: u64) -> Result<(), String> {
+    let path = state.inner.lock().unwrap().notes_dir.join(format!("{}.md", id));
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("remove {}: {}", path.display(), e))?;
     }
     Ok(())
 }
 
+// ── Storage location commands ───────────────────────────────────────────────
+
 #[tauri::command]
-fn notes_dir(state: State<'_, StoragePath>) -> String {
-    state.notes_dir.display().to_string()
+fn get_notes_dir(state: State<'_, AppState>) -> String {
+    state.inner.lock().unwrap().notes_dir.display().to_string()
+}
+
+#[tauri::command]
+fn get_default_notes_dir(state: State<'_, AppState>) -> String {
+    state.inner.lock().unwrap().default_notes_dir.display().to_string()
+}
+
+#[tauri::command]
+fn set_notes_dir(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let new_dir = PathBuf::from(&path);
+    if !new_dir.is_absolute() {
+        return Err("path must be absolute".into());
+    }
+    fs::create_dir_all(&new_dir).map_err(|e| format!("create dir: {}", e))?;
+
+    let config_path = {
+        let inner = state.inner.lock().unwrap();
+        inner.config_path.clone()
+    };
+
+    let cfg = AppConfig { notes_dir: Some(new_dir.display().to_string()) };
+    save_config(&config_path, &cfg)?;
+
+    let mut inner = state.inner.lock().unwrap();
+    inner.notes_dir = new_dir.clone();
+    Ok(new_dir.display().to_string())
+}
+
+/// Drop the user override and revert to `<app-data>/.../notes/`. Returns
+/// the new (default) notes directory so the UI can refresh its sidebar.
+#[tauri::command]
+fn reset_notes_dir(state: State<'_, AppState>) -> Result<String, String> {
+    let (config_path, default_dir) = {
+        let inner = state.inner.lock().unwrap();
+        (inner.config_path.clone(), inner.default_notes_dir.clone())
+    };
+    save_config(&config_path, &AppConfig::default())?;
+    fs::create_dir_all(&default_dir).map_err(|e| format!("create dir: {}", e))?;
+    let mut inner = state.inner.lock().unwrap();
+    inner.notes_dir = default_dir.clone();
+    Ok(default_dir.display().to_string())
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn note_path(dir: &Path, id: u64) -> PathBuf {
-    dir.join(format!("{}.md", id))
-}
 
 fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -185,41 +252,28 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Split a Markdown file with YAML frontmatter into `(yaml_text, body_text)`.
-/// If no frontmatter is found, returns an empty YAML chunk and the whole
-/// file as body — caller decides how to react.
 fn split_frontmatter(raw: &str) -> (String, &str) {
-    // Frontmatter block: starts with "---\n" at offset 0, ends at the
-    // next line that is exactly "---" (with optional trailing whitespace).
     let trimmed_start = raw.strip_prefix("---\n").or_else(|| raw.strip_prefix("---\r\n"));
     let after_open = match trimmed_start {
         Some(s) => s,
         None => return (String::new(), raw),
     };
-    // Find the closing "---" line.
     for (idx, line) in after_open.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed == "---" {
-            // Compute byte offsets:
-            //   yaml = after_open[..start_of_this_line]
-            //   rest after this line
             let lines_so_far: Vec<&str> = after_open.split_inclusive('\n').take(idx).collect();
             let yaml_len: usize = lines_so_far.iter().map(|s| s.len()).sum();
             let yaml_text = &after_open[..yaml_len];
-            // Skip the closing line + one optional newline so the body
-            // starts cleanly.
             let body_start = yaml_len + line.len();
             let body = after_open[body_start..].trim_start_matches('\n');
             return (yaml_text.to_string(), body);
         }
     }
-    // Open marker found but no close — treat as no frontmatter.
     (String::new(), raw)
 }
 
 // ── Migration: legacy notes.json → per-note .md files ───────────────────────
 
-/// Old (v0.1.0) record shape from notes.json.
 #[derive(Debug, Deserialize)]
 struct LegacyNote {
     id: u64,
@@ -231,8 +285,6 @@ struct LegacyNote {
     updated_at: u64,
 }
 
-/// Read notes.json (if present), write each entry as `<id>.md`, delete
-/// the JSON file. Idempotent: if notes.json doesn't exist, no-op.
 fn migrate_legacy_json(legacy_json: &Path, notes_dir: &Path) {
     if !legacy_json.exists() {
         return;
@@ -260,15 +312,10 @@ fn migrate_legacy_json(legacy_json: &Path, notes_dir: &Path) {
         return;
     }
     for note in &legacy {
-        let path = note_path(notes_dir, note.id);
-        if path.exists() {
-            // Don't clobber a note already migrated by a previous run.
-            continue;
-        }
+        let path = notes_dir.join(format!("{}.md", note.id));
+        if path.exists() { continue; }
         let fm = Frontmatter {
             title: note.title.clone(),
-            // Best-effort: use updatedAt as createdAt when the legacy
-            // record didn't track creation time separately.
             created_at: note.updated_at,
             updated_at: note.updated_at,
         };
@@ -285,8 +332,6 @@ fn migrate_legacy_json(legacy_json: &Path, notes_dir: &Path) {
             continue;
         }
     }
-    // Whole batch succeeded (or each failure was logged) — remove the
-    // legacy file so we don't re-migrate next time.
     if let Err(err) = fs::remove_file(legacy_json) {
         eprintln!("[notepad] migration: cannot remove legacy file: {}", err);
     } else {
@@ -297,20 +342,41 @@ fn migrate_legacy_json(legacy_json: &Path, notes_dir: &Path) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
-            let notes_dir = data_dir.join("notes");
+            let default_notes_dir = data_dir.join("notes");
             let legacy_json = data_dir.join("notes.json");
+            let config_path = data_dir.join("config.json");
 
-            // Run migration synchronously before the frontend gets a chance
-            // to call list_notes.
-            migrate_legacy_json(&legacy_json, &notes_dir);
+            // Resolve the active notes dir from the config (if any) or
+            // default to <app-data>/.../notes. Migration runs against the
+            // DEFAULT location only — we never silently move files out of
+            // a user-picked folder.
+            migrate_legacy_json(&legacy_json, &default_notes_dir);
 
-            let _ = legacy_json; // already consumed by migration above
-            app.manage(StoragePath { notes_dir });
+            let cfg = load_config(&config_path);
+            let notes_dir = cfg
+                .notes_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| default_notes_dir.clone());
+
+            // Make sure the active dir exists; tolerate it failing (the UI
+            // shows a meaningful error when list_notes returns the IO err).
+            let _ = fs::create_dir_all(&notes_dir);
+
+            app.manage(AppState {
+                inner: Mutex::new(AppStateInner {
+                    notes_dir,
+                    default_notes_dir,
+                    config_path,
+                }),
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -318,7 +384,10 @@ pub fn run() {
             read_note,
             write_note,
             delete_note,
-            notes_dir,
+            get_notes_dir,
+            get_default_notes_dir,
+            set_notes_dir,
+            reset_notes_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -45,5 +45,17 @@ export const writeNote = (note) => invoke('write_note', {
  */
 export const deleteNote = (id) => invoke('delete_note', { id });
 
-/** Path of the `notes/` directory (shown in the UI footer for debugging). */
-export const notesDir = () => invoke('notes_dir');
+/** Currently active notes directory (custom-picked or default). */
+export const notesDir = () => invoke('get_notes_dir');
+
+/** Default notes directory (<app-data>/courvux-tauri-notepad/notes). */
+export const defaultNotesDir = () => invoke('get_default_notes_dir');
+
+/**
+ * Override the notes directory. Returns the resolved absolute path on
+ * success. Tauri creates the directory if it doesn't exist.
+ */
+export const setNotesDir = (path) => invoke('set_notes_dir', { path });
+
+/** Drop the user override; returns the path of the default location. */
+export const resetNotesDir = () => invoke('reset_notes_dir');

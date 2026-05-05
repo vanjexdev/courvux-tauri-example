@@ -1,35 +1,53 @@
 import { createApp } from 'courvux';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
-import { listNotes, readNote, writeNote, deleteNote, notesDir } from './tauri.js';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
-// GFM tables/strikethrough, line breaks without two trailing spaces, no
-// header IDs (we don't render anchors so they're noise), no email mangling.
-marked.setOptions({
-    gfm: true,
-    breaks: true,
-    headerIds: false,
-    mangle: false,
-});
+import {
+    listNotes, readNote, writeNote, deleteNote,
+    notesDir, defaultNotesDir, setNotesDir, resetNotesDir,
+} from './tauri.js';
+import { renderMarkdown } from './markdown.js';
+import { ICONS } from './icons.js';
 
 const debounce = (fn, ms) => {
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 };
 
+// Sidebar width is a UI preference, not a per-note value — persist in
+// localStorage so it survives across sessions on the same install.
+const SIDEBAR_WIDTH_KEY = 'courvux-notepad:sidebar-width';
+const SIDEBAR_OPEN_KEY  = 'courvux-notepad:sidebar-open';
+const VIEW_MODE_KEY     = 'courvux-notepad:view-mode';
+
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 480;
+
 createApp({
     template: `
         <div cv-cloak class="flex h-full">
             <!-- ── Sidebar ─────────────────────────────────────────────── -->
-            <aside class="w-64 shrink-0 border-r border-zinc-800 bg-zinc-900/60 backdrop-blur flex flex-col">
-                <header class="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
-                    <h1 class="text-sm font-semibold tracking-wide text-zinc-300">Notepad</h1>
-                    <button
-                        @click="newNote()"
-                        class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white"
-                        title="New note (Ctrl+N)">
-                        + New
-                    </button>
+            <aside
+                cv-show="sidebarOpen"
+                :style="'width:' + sidebarWidth + 'px; min-width:' + sidebarWidth + 'px'"
+                class="shrink-0 border-r border-zinc-800 bg-zinc-900/60 backdrop-blur flex flex-col relative">
+
+                <header class="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-2">
+                    <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate">Notepad</h1>
+                    <div class="flex items-center gap-1">
+                        <button
+                            @click="settingsOpen = true"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            title="Settings">
+                            <span cv-html.raw="icons.settings"></span>
+                        </button>
+                        <button
+                            @click="newNote()"
+                            class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1"
+                            title="New note (Ctrl+N)">
+                            <span cv-html.raw="icons.plus"></span>
+                            <span>New</span>
+                        </button>
+                    </div>
                 </header>
 
                 <ul class="flex-1 overflow-y-auto py-2">
@@ -60,20 +78,47 @@ createApp({
                         :title="storageDir">
                     {{ storageDir || 'Loading…' }}
                 </footer>
+
+                <!-- Drag handle on the right edge to resize the sidebar. -->
+                <div
+                    @mousedown="startResize($event)"
+                    class="absolute top-0 right-0 h-full w-1 cursor-col-resize hover:bg-emerald-500/50"
+                    :class="resizing ? 'bg-emerald-500/70' : ''"
+                    title="Drag to resize"></div>
             </aside>
 
             <!-- ── Editor ──────────────────────────────────────────────── -->
             <main class="flex-1 flex flex-col bg-zinc-950 min-w-0">
-                <div cv-if="!selected" class="flex-1 flex items-center justify-center text-zinc-600">
-                    <div class="text-center">
-                        <div class="text-6xl mb-4">📝</div>
-                        <p class="text-sm">Select a note from the left, or create a new one.</p>
-                        <p class="text-xs mt-2 text-zinc-700">Ctrl+N · new · Ctrl+S · save · Ctrl+P · cycle view</p>
+                <!-- Toolbar with the sidebar toggle is always shown so the user can re-open the sidebar. -->
+                <div cv-if="!selected" class="flex-1 flex flex-col">
+                    <header class="px-4 py-3 border-b border-zinc-800 flex items-center gap-2">
+                        <button
+                            @click="toggleSidebar()"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :title="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'">
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen"></span>
+                        </button>
+                    </header>
+                    <div class="flex-1 flex items-center justify-center text-zinc-600">
+                        <div class="text-center">
+                            <div class="mb-4 inline-flex p-4 rounded-full bg-zinc-900 text-zinc-700">
+                                <span cv-html.raw="iconsLg.file"></span>
+                            </div>
+                            <p class="text-sm">Select a note from the sidebar, or create a new one.</p>
+                            <p class="text-xs mt-2 text-zinc-700">Ctrl+N · new · Ctrl+S · save · Ctrl+P · cycle view · Ctrl+B · toggle sidebar</p>
+                        </div>
                     </div>
                 </div>
 
                 <div cv-else class="flex-1 flex flex-col min-h-0">
-                    <header class="px-6 py-3 border-b border-zinc-800 flex items-center gap-3">
+                    <header class="px-4 py-3 border-b border-zinc-800 flex items-center gap-3">
+                        <button
+                            @click="toggleSidebar()"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :title="sidebarOpen ? 'Hide sidebar (Ctrl+B)' : 'Show sidebar (Ctrl+B)'">
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen"></span>
+                        </button>
+
                         <input
                             type="text"
                             cv-model="selected.title"
@@ -83,24 +128,26 @@ createApp({
 
                         <button
                             @click="cycleView()"
-                            class="px-2 py-1 text-xs rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-800"
+                            class="px-2 py-1 text-xs rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-800 inline-flex items-center gap-1.5"
                             :title="'View: ' + viewMode + ' (Ctrl+P)'">
-                            {{ viewMode === 'edit' ? '✎ Edit' : viewMode === 'split' ? '⊟ Split' : '👁 Preview' }}
+                            <span cv-html.raw="viewMode === 'edit' ? icons.edit : viewMode === 'split' ? icons.split : icons.eye"></span>
+                            <span class="capitalize">{{ viewMode }}</span>
                         </button>
 
                         <button
                             @click="forceSave()"
                             :disabled="saveStatus === 'saved' || saveStatus === 'saving'"
-                            class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                            class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
                             title="Save (Ctrl+S)">
-                            {{ saveStatus === 'saved' ? '✓' : 'Save' }}
+                            <span cv-html.raw="saveStatus === 'saved' ? icons.check : icons.save"></span>
+                            <span>{{ saveStatus === 'saved' ? 'Saved' : 'Save' }}</span>
                         </button>
 
                         <button
                             @click="confirmDelete(selected.id)"
-                            class="px-2 py-1 text-xs rounded text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
+                            class="p-1.5 rounded text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
                             title="Delete this note">
-                            Delete
+                            <span cv-html.raw="icons.trash"></span>
                         </button>
                     </header>
 
@@ -126,18 +173,84 @@ createApp({
                     </footer>
                 </div>
             </main>
+
+            <!-- ── Settings modal ──────────────────────────────────────── -->
+            <div cv-if="settingsOpen"
+                 @click.self="settingsOpen = false"
+                 class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl">
+                    <header class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
+                        <h2 class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
+                            <span cv-html.raw="icons.settings"></span>
+                            <span>Settings</span>
+                        </h2>
+                        <button
+                            @click="settingsOpen = false"
+                            class="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            title="Close">
+                            <span cv-html.raw="icons.x"></span>
+                        </button>
+                    </header>
+
+                    <div class="px-5 py-4 space-y-4">
+                        <div>
+                            <label class="block text-xs font-medium text-zinc-400 mb-1.5">Notes folder</label>
+                            <div class="flex items-center gap-2 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-xs text-zinc-300 font-mono break-all">
+                                <span cv-html.raw="icons.folder" class="text-zinc-500 shrink-0"></span>
+                                <span class="flex-1">{{ storageDir || '—' }}</span>
+                            </div>
+                            <p cv-if="!isCustomDir" class="text-[11px] text-zinc-600 mt-1">
+                                Default location for this app's data on this machine.
+                            </p>
+                            <p cv-else class="text-[11px] text-amber-500 mt-1">
+                                Custom folder. Notes load from here instead of the default location.
+                            </p>
+                        </div>
+
+                        <div class="flex gap-2">
+                            <button
+                                @click="pickFolder()"
+                                class="flex-1 px-3 py-2 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center justify-center gap-1.5">
+                                <span cv-html.raw="icons.folder"></span>
+                                <span>Choose folder…</span>
+                            </button>
+                            <button
+                                @click="resetFolder()"
+                                :disabled="!isCustomDir"
+                                class="px-3 py-2 text-xs rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed">
+                                Reset to default
+                            </button>
+                        </div>
+
+                        <div class="text-[11px] text-zinc-600 pt-2 border-t border-zinc-800">
+                            Pick a folder you sync (Dropbox, Syncthing, git) to keep your notes
+                            available across devices. Each note is one <code class="text-zinc-400">.md</code> file —
+                            you can edit them in any text editor while the app is closed.
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     `,
     data: {
-        // Each note: { id, title, body, createdAt, updatedAt, _loaded }.
-        // `_loaded` flips to true once read_note has populated body+createdAt.
-        // Sidebar entries from list_notes() start with empty body + _loaded:false;
-        // body fills in on first selection.
         notes: [],
         selectedId: null,
-        saveStatus: 'saved',  // 'unsaved' | 'dirty' | 'saving' | 'saved'
-        viewMode: 'split',    // 'edit' | 'split' | 'preview'
+        saveStatus: 'saved',
+        viewMode: 'split',
         storageDir: '',
+        defaultDir: '',
+
+        // UI prefs persisted in localStorage.
+        sidebarOpen: true,
+        sidebarWidth: 256,
+        resizing: false,
+
+        settingsOpen: false,
+
+        // Static SVG strings for the lucide icons used in the template.
+        icons: ICONS,
+        // Same icons but at 32px for the empty-state hero glyph.
+        iconsLg: {},
     },
     computed: {
         sortedNotes() {
@@ -147,11 +260,7 @@ createApp({
             return this.notes.find(n => n.id === this.selectedId) ?? null;
         },
         renderedBody() {
-            const md = this.selected?.body ?? '';
-            // marked → DOMPurify so any pasted `<script>` / `on*=` /
-            // `javascript:` URL never executes. Strict CSP holds even
-            // with hostile Markdown input.
-            return DOMPurify.sanitize(marked.parse(md));
+            return renderMarkdown(this.selected?.body ?? '');
         },
         wordCount() {
             const body = this.selected?.body ?? '';
@@ -178,21 +287,18 @@ createApp({
                 default:        return 'text-zinc-500';
             }
         },
+        isCustomDir() {
+            return !!this.storageDir
+                && !!this.defaultDir
+                && this.storageDir !== this.defaultDir;
+        },
     },
     methods: {
         async newNote() {
-            // Optimistic local insert. The file does not exist on disk yet,
-            // so saveStatus stays 'unsaved' and the user must hit Ctrl+S
-            // (or click Save) to commit. Only after the first manual save
-            // does auto-save take over for subsequent edits.
             const id = Date.now();
             this.notes.push({
-                id,
-                title: '',
-                body: '',
-                createdAt: id,
-                updatedAt: id,
-                _loaded: true,    // already in memory
+                id, title: '', body: '',
+                createdAt: id, updatedAt: id, _loaded: true,
             });
             this.selectedId = id;
             this.saveStatus = 'unsaved';
@@ -200,14 +306,12 @@ createApp({
 
         async select(id) {
             if (id === this.selectedId) return;
-            // Refuse to lose unsaved data silently.
             if (this.saveStatus === 'unsaved' || this.saveStatus === 'dirty') {
                 if (!confirm('You have unsaved changes. Switch anyway?')) return;
             }
             const note = this.notes.find(n => n.id === id);
             if (!note) return;
             this.selectedId = id;
-            // Lazy-load body the first time this note is selected.
             if (!note._loaded) {
                 try {
                     const full = await readNote(id);
@@ -216,8 +320,6 @@ createApp({
                     note._loaded = true;
                 } catch (err) {
                     console.warn('[notepad] read_note failed for', id, err);
-                    // Treat as ghost entry: keep it in the sidebar but
-                    // start the user fresh. Forces a manual save.
                     note.body = '';
                     note.createdAt = id;
                     note._loaded = true;
@@ -244,17 +346,11 @@ createApp({
             }
         },
 
-        // Listener for both title input and body textarea. Promotes the
-        // save state and schedules an auto-save *only* when the note is
-        // already on disk. Brand-new notes stay 'unsaved' until the user
-        // hits Ctrl+S — that's the explicit user-confirmed first commit.
         onEdit() {
             if (this.saveStatus === 'unsaved') return;
             this.saveStatus = 'dirty';
             this.scheduleAutoSave();
         },
-
-        // Wired in onMount so `this` binds correctly.
         scheduleAutoSave: null,
 
         async forceSave() {
@@ -285,6 +381,83 @@ createApp({
             const order = ['edit', 'split', 'preview'];
             const i = order.indexOf(this.viewMode);
             this.viewMode = order[(i + 1) % order.length];
+            try { localStorage.setItem(VIEW_MODE_KEY, this.viewMode); } catch {}
+        },
+
+        toggleSidebar() {
+            this.sidebarOpen = !this.sidebarOpen;
+            try { localStorage.setItem(SIDEBAR_OPEN_KEY, this.sidebarOpen ? '1' : '0'); } catch {}
+        },
+
+        // Drag-to-resize handler. Adds the move/up listeners on the
+        // window so the drag continues even when the cursor leaves the
+        // tiny 4px handle area.
+        startResize(ev) {
+            ev.preventDefault();
+            this.resizing = true;
+            const startX = ev.clientX;
+            const startW = this.sidebarWidth;
+            const onMove = (e) => {
+                const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + (e.clientX - startX)));
+                this.sidebarWidth = next;
+            };
+            const onUp = () => {
+                this.resizing = false;
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(this.sidebarWidth)); } catch {}
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        },
+
+        async pickFolder() {
+            // Native folder picker via @tauri-apps/plugin-dialog. Returns
+            // the selected absolute path, or null when the user cancels.
+            const picked = await openDialog({
+                directory: true,
+                multiple: false,
+                defaultPath: this.storageDir || undefined,
+                title: 'Choose notes folder',
+            });
+            if (!picked) return;
+            try {
+                const resolved = await setNotesDir(picked);
+                this.storageDir = resolved;
+                await this.refreshNotes();
+                this.settingsOpen = false;
+            } catch (err) {
+                console.error('[notepad] set_notes_dir failed:', err);
+                alert('Could not switch folder: ' + err);
+            }
+        },
+
+        async resetFolder() {
+            try {
+                const resolved = await resetNotesDir();
+                this.storageDir = resolved;
+                await this.refreshNotes();
+            } catch (err) {
+                console.error('[notepad] reset_notes_dir failed:', err);
+                alert('Could not reset: ' + err);
+            }
+        },
+
+        async refreshNotes() {
+            this.selectedId = null;
+            this.saveStatus = 'saved';
+            try {
+                const summaries = await listNotes();
+                this.notes = summaries.map(s => ({
+                    id: s.id, title: s.title, body: '',
+                    createdAt: 0, updatedAt: s.updatedAt, _loaded: false,
+                }));
+                if (this.notes.length > 0) {
+                    await this.select(this.sortedNotes[0].id);
+                }
+            } catch (err) {
+                console.error('[notepad] refresh failed:', err);
+            }
         },
 
         formatDate(ts) {
@@ -297,24 +470,31 @@ createApp({
         },
     },
     async onMount() {
+        // Bigger version of every icon for the empty-state hero. Mutating
+        // width/height on the existing SVG string preserves the viewBox so
+        // the strokes scale cleanly without re-running lucide for a 2x set.
+        this.iconsLg = Object.fromEntries(
+            Object.entries(this.icons).map(([k, svg]) =>
+                [k, svg.replace(/width="\d+"/, 'width="48"').replace(/height="\d+"/, 'height="48"')],
+            ),
+        );
+
+        // Restore UI prefs.
         try {
+            const w = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY), 10);
+            if (!isNaN(w)) this.sidebarWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, w));
+            this.sidebarOpen = localStorage.getItem(SIDEBAR_OPEN_KEY) !== '0';
+            const vm = localStorage.getItem(VIEW_MODE_KEY);
+            if (vm === 'edit' || vm === 'split' || vm === 'preview') this.viewMode = vm;
+        } catch {}
+
+        // Load storage dir + notes from Rust.
+        try {
+            this.defaultDir = await defaultNotesDir();
             this.storageDir = await notesDir();
-            const summaries = await listNotes();
-            // Hydrate as un-loaded entries; bodies fill in on selection.
-            this.notes = summaries.map(s => ({
-                id: s.id,
-                title: s.title,
-                body: '',
-                createdAt: 0,
-                updatedAt: s.updatedAt,
-                _loaded: false,
-            }));
+            await this.refreshNotes();
         } catch (err) {
             console.error('[notepad] startup load failed:', err);
-        }
-
-        if (this.notes.length > 0) {
-            await this.select(this.sortedNotes[0].id);
         }
 
         this.scheduleAutoSave = debounce(() => {
@@ -328,6 +508,8 @@ createApp({
             if (k === 'n') { e.preventDefault(); this.newNote(); }
             else if (k === 's') { e.preventDefault(); this.forceSave(); }
             else if (k === 'p') { e.preventDefault(); this.cycleView(); }
+            else if (k === 'b') { e.preventDefault(); this.toggleSidebar(); }
+            else if (k === ',') { e.preventDefault(); this.settingsOpen = !this.settingsOpen; }
         });
 
         window.addEventListener('beforeunload', (e) => {

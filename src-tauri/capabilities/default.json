@@ -1,0 +1,10 @@
+{
+    "$schema": "https://schema.tauri.app/config/2/capabilities",
+    "identifier": "default",
+    "description": "Default capabilities for the notepad — base IPC + dialog plugin for the folder picker.",
+    "windows": ["main"],
+    "permissions": [
+        "core:default",
+        "dialog:allow-open"
+    ]
+}

@@ -19,8 +19,14 @@ Notepad demo app showing the [Courvux](https://github.com/vanjexdev/courvux) rea
   - `Ctrl/Cmd + N` — new note
   - `Ctrl/Cmd + S` — save (force, ignores debounce)
   - `Ctrl/Cmd + P` — cycle Edit / Split / Preview
+  - `Ctrl/Cmd + B` — toggle sidebar
+  - `Ctrl/Cmd + ,` — open / close settings
 - **Window-close guard.** `beforeunload` blocks accidental quit while the current note is `unsaved` or `dirty`.
 - **Migration from v0.1.0.** If a `notes.json` file from the previous JSON-blob format exists in the app-data directory, the Rust side reads it once on startup, writes each entry as its own `.md` file, and removes the legacy file.
+- **Syntax-highlighted code fences** via [Prism](https://prismjs.com/). Bundled languages: bash, css, diff, go, html/xml, java, javascript, json, markdown, python, rust, sql, toml, typescript, yaml. Tomorrow Night theme to match the dark UI.
+- **Lucide icons** throughout the UI — toolbar, sidebar header, settings panel — instead of ASCII glyphs.
+- **Settings panel** (gear icon, sidebar header, `Ctrl+,`) lets the user pick any folder on disk as the notes location via the native folder picker (`@tauri-apps/plugin-dialog`). Choice persists in `<app-data>/courvux-tauri-notepad/config.json`. "Reset to default" reverts.
+- **Collapsible + resizable sidebar.** Drag the right edge to resize (180px – 480px); toggle visibility from the toolbar or `Ctrl+B`. Width and open state both persist in `localStorage`.
 
 ## Dev
 
