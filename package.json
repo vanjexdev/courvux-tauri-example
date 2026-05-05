@@ -1,7 +1,7 @@
 {
     "name": "courvux-tauri-notepad",
     "private": true,
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Notepad demo app — Courvux + Tauri 2 + Tailwind 4 with build-time precompiled expressions and strict CSP (script-src 'self', no unsafe-eval).",
     "type": "module",
     "scripts": {
@@ -13,9 +13,11 @@
         "tauri:build": "tauri build"
     },
     "dependencies": {
+        "@tauri-apps/api": "^2.0.0",
         "courvux": "github:vanjexdev/courvux#v0.7.1",
         "courvux-precompiler": "github:vanjexdev/courvux-precompiler",
-        "@tauri-apps/api": "^2.0.0"
+        "dompurify": "^3.4.2",
+        "marked": "^18.0.3"
     },
     "devDependencies": {
         "@tailwindcss/vite": "^4.0.0",

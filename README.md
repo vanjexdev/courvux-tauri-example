@@ -9,12 +9,18 @@ Notepad demo app showing the [Courvux](https://github.com/vanjexdev/courvux) rea
 
 ## What it shows
 
-- **Courvux 0.7.1** mounted inside a Tauri WebView, with sidebar list, inline editing, and reactive computed (`wordCount`, `charCount`, `sortedNotes`).
+- **Courvux 0.7.1** mounted inside a Tauri WebView, with sidebar list, inline editing, and reactive computed (`wordCount`, `charCount`, `sortedNotes`, `renderedBody`).
 - **`courvux-precompile` Vite plugin** active — every template expression is compiled to a JS arrow function at build time, so the runtime never calls `new Function`. The Tauri `tauri.conf.json` ships `script-src 'self'` and the `<meta http-equiv="Content-Security-Policy">` in `index.html` matches; no `unsafe-eval` anywhere.
 - **Tailwind 4** via `@tailwindcss/vite`. Single `@import "tailwindcss"` in `src/style.css`, no config file.
-- **Disk persistence via Tauri commands.** Rust side reads/writes `notes.json` atomically (tempfile + rename) inside the platform's app-data directory. JS side calls `invoke('load_notes')` / `invoke('save_notes', { notes })` through a thin wrapper in `src/tauri.js`.
-- **Keyboard shortcut** `Ctrl/Cmd + N` for new note.
-- **Auto-save** debounced to 400ms after the last keystroke; the editor footer shows `● Saving…` / `✓ Saved` state.
+- **Markdown editing + live preview** via [`marked`](https://marked.js.org/) → [`DOMPurify`](https://github.com/cure53/DOMPurify). Three view modes — Edit / Split / Preview — cycle with `Ctrl+P`. The preview pane is fully sanitized so a hostile paste can't execute scripts even with strict CSP.
+- **One Markdown file per note** under `<app-data>/courvux-tauri-notepad/notes/<id>.md`. Files start with a YAML frontmatter block (`title`, `createdAt`, `updatedAt`) and end with the raw Markdown body. Open in any editor, sync with Dropbox / Syncthing / git, no proprietary store.
+- **Save state machine.** New notes start `unsaved` and require `Ctrl+S` (or the Save button) for the first commit. After that, every keystroke promotes the note to `dirty` and auto-saves 600 ms later. Status bar shows `○ Unsaved` / `● Saving…` / `✓ Saved`.
+- **Keyboard shortcuts:**
+  - `Ctrl/Cmd + N` — new note
+  - `Ctrl/Cmd + S` — save (force, ignores debounce)
+  - `Ctrl/Cmd + P` — cycle Edit / Split / Preview
+- **Window-close guard.** `beforeunload` blocks accidental quit while the current note is `unsaved` or `dirty`.
+- **Migration from v0.1.0.** If a `notes.json` file from the previous JSON-blob format exists in the app-data directory, the Rust side reads it once on startup, writes each entry as its own `.md` file, and removes the legacy file.
 
 ## Dev
 

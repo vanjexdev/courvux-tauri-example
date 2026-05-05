@@ -7,3 +7,89 @@
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgb(63 63 70); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: rgb(82 82 91); }
+
+/* Markdown preview pane — Tailwind 4 ships without `@tailwindcss/typography`
+   by default and we don't need its full surface, so we hand-roll the bits
+   the preview actually uses. Mirrors the dark "prose-invert" feel. */
+.markdown-body {
+    color: rgb(228 228 231);
+    font-size: 0.95rem;
+    line-height: 1.65;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+    color: rgb(244 244 245);
+    font-weight: 600;
+    margin: 1.4em 0 0.6em;
+    line-height: 1.25;
+}
+.markdown-body h1 { font-size: 1.7rem; border-bottom: 1px solid rgb(39 39 42); padding-bottom: 0.3em; }
+.markdown-body h2 { font-size: 1.35rem; border-bottom: 1px solid rgb(39 39 42); padding-bottom: 0.2em; }
+.markdown-body h3 { font-size: 1.15rem; }
+.markdown-body h4 { font-size: 1rem; }
+.markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body blockquote,
+.markdown-body pre, .markdown-body table { margin: 0.8em 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.5em; }
+.markdown-body li { margin: 0.25em 0; }
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+.markdown-body a { color: rgb(110 231 183); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-body a:hover { color: rgb(167 243 208); }
+.markdown-body strong { color: rgb(244 244 245); font-weight: 600; }
+.markdown-body em     { font-style: italic; }
+.markdown-body code {
+    background: rgb(24 24 27);
+    color: rgb(244 114 182);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    font-size: 0.85em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.markdown-body pre {
+    background: rgb(24 24 27);
+    border: 1px solid rgb(39 39 42);
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+}
+.markdown-body pre code {
+    background: transparent;
+    color: rgb(228 228 231);
+    padding: 0;
+    border-radius: 0;
+    font-size: 0.85em;
+}
+.markdown-body blockquote {
+    border-left: 3px solid rgb(63 63 70);
+    padding: 0.2em 1em;
+    color: rgb(161 161 170);
+    background: rgb(24 24 27 / 0.4);
+    border-radius: 0 4px 4px 0;
+}
+.markdown-body hr {
+    border: none;
+    border-top: 1px solid rgb(39 39 42);
+    margin: 1.5em 0;
+}
+.markdown-body table {
+    border-collapse: collapse;
+    width: 100%;
+}
+.markdown-body th, .markdown-body td {
+    border: 1px solid rgb(39 39 42);
+    padding: 6px 10px;
+    text-align: left;
+}
+.markdown-body th {
+    background: rgb(24 24 27);
+    font-weight: 600;
+}
+.markdown-body img {
+    max-width: 100%;
+    border-radius: 4px;
+    margin: 0.5em 0;
+}
+.markdown-body input[type="checkbox"] {
+    margin-right: 0.4em;
+    accent-color: rgb(16 185 129);
+}
