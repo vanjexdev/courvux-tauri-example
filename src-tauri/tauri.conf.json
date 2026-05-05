@@ -1,0 +1,43 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "Courvux Notepad",
+    "version": "0.1.0",
+    "identifier": "dev.vanjex.courvux-tauri-notepad",
+    "build": {
+        "beforeDevCommand": "pnpm dev",
+        "beforeBuildCommand": "pnpm build",
+        "devUrl": "http://localhost:1420",
+        "frontendDist": "../dist"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "Courvux Notepad",
+                "width": 960,
+                "height": 640,
+                "minWidth": 720,
+                "minHeight": 480,
+                "decorations": true,
+                "transparent": false,
+                "resizable": true
+            }
+        ],
+        "security": {
+            "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'self'"
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": "all",
+        "category": "Productivity",
+        "shortDescription": "Tiny notepad demo built with Courvux + Tauri.",
+        "longDescription": "Notepad demo showcasing the Courvux UI framework running inside Tauri 2 with build-time precompiled template expressions, strict Content-Security-Policy (no unsafe-eval), and Tailwind 4 for styling.",
+        "icon": [
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.icns",
+            "icons/icon.ico"
+        ]
+    }
+}

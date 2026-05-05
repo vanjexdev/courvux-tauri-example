@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Strict CSP — `script-src 'self'` works because the courvux-precompile
+         Vite plugin compiles every template expression at build time. No
+         `unsafe-eval` needed. The Tauri runtime injects its own scripts via
+         IPC, not via inline <script>, so they don't need a hash here.
+         `style-src 'unsafe-inline'` stays because Tailwind generates inline
+         <style> for utility classes during dev; can drop once we run a CSS
+         hashing step. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self';
+                   script-src 'self';
+                   style-src 'self' 'unsafe-inline';
+                   img-src 'self' data:;
+                   font-src 'self';
+                   connect-src 'self' ipc: http://ipc.localhost;
+                   object-src 'none';
+                   base-uri 'self';
+                   form-action 'self'" />
+    <title>Courvux Notepad — Tauri demo</title>
+    <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body class="h-full bg-zinc-950 text-zinc-100 antialiased">
+    <div id="app" class="h-full"></div>
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>

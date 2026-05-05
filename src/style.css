@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Hide the un-rendered template flash before Courvux mounts. */
+[cv-cloak] { display: none !important; }
+
+/* Native scroll polish. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgb(63 63 70); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(82 82 91); }

@@ -1,0 +1,26 @@
+[package]
+name = "courvux-tauri-notepad"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vanjex <vanjexdev@gmail.com>"]
+license = "MIT"
+description = "Notepad demo — Courvux + Tauri 2 + Tailwind 4 + courvux-precompile (strict CSP)."
+
+[lib]
+name = "courvux_tauri_notepad_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
