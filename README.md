@@ -30,19 +30,59 @@ Notepad demo app showing the [Courvux](https://github.com/vanjexdev/courvux) rea
 
 ## Dev
 
-Prereqs:
-- Node 18+
-- Rust toolchain (`rustup install stable`)
-- Linux: `webkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `libsoup-3.0-dev`, `xdg-utils` (most distros bundle these as a `tauri` group)
-- macOS: Xcode CLI tools
-- Windows: WebView2 (preinstalled on recent Windows 11)
-
 ```bash
 pnpm install
 pnpm tauri:dev
 ```
 
-The first build compiles all of Tauri + WebKit GTK and takes a few minutes; subsequent runs are seconds.
+The first build compiles all of Tauri + the platform's webview bindings (WebKit GTK on Linux, WebView2 on Windows, WKWebView on macOS) and takes a few minutes; subsequent runs are seconds. Hot module reload works for both `src/main.js` and `src/style.css`; Rust changes inside `src-tauri/` trigger a re-link, not a full rebuild.
+
+## Prerequisites
+
+Common to every platform:
+
+- **Node 18+** (`node --version`)
+- **pnpm** (`pnpm --version`) — `npm install -g pnpm` if missing
+- **Rust toolchain** — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+
+### Linux (Fedora 40+)
+
+System packages (system → no userland workaround):
+
+```bash
+sudo dnf install -y \
+    webkit2gtk4.1-devel \
+    openssl-devel \
+    curl wget file \
+    libappindicator-gtk3-devel \
+    librsvg2-devel \
+    patchelf \
+    rpm-build
+```
+
+### Linux (Debian / Ubuntu)
+
+```bash
+sudo apt install -y \
+    libwebkit2gtk-4.1-dev \
+    build-essential curl wget file \
+    libxdo-dev libssl-dev libayatana-appindicator3-dev \
+    librsvg2-dev patchelf
+```
+
+### macOS
+
+```bash
+xcode-select --install
+```
+
+That ships everything Tauri needs (Clang, the macOS SDK, `codesign` for ad-hoc signatures during local builds).
+
+### Windows
+
+1. Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — pick the "Desktop development with C++" workload.
+2. **WebView2** is preinstalled on Windows 11 and recent Windows 10 updates. If your build target is older, install the [Evergreen runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
+3. Optional bundling tools (only needed for installer artifacts): the build downloads NSIS / WiX automatically on first run.
 
 ## Build a release binary
 
@@ -51,10 +91,30 @@ pnpm tauri:build
 ```
 
 Outputs land in `src-tauri/target/release/bundle/`:
-- `appimage/` — Linux portable (.AppImage)
-- `deb/`      — Debian package (.deb)
-- `msi/`      — Windows installer (Windows host only)
-- `dmg/`      — macOS disk image (macOS host only)
+
+| Platform | Bundle types Tauri produces |
+|---|---|
+| Linux   | `appimage/*.AppImage`, `deb/*.deb`, `rpm/*.rpm` |
+| macOS   | `dmg/*.dmg`, `macos/*.app` |
+| Windows | `msi/*.msi`, `nsis/*-setup.exe` |
+
+The `bundle.targets` array in `src-tauri/tauri.conf.json` controls which formats to build. Currently set to `["appimage", "rpm", "deb"]` for the Linux Fedora-targeted host that produced this repo's first release; on macOS / Windows the CLI ignores Linux-only targets and emits the platform-native ones automatically.
+
+### Fedora 40+ AppImage gotcha
+
+`linuxdeploy` ships an old `strip` binary inside its AppImage that doesn't recognize the `.relr.dyn` section type emitted by glibc on Fedora 40+. The build crashes mid-bundle with `unknown type [0x13] section .relr.dyn`. Skip the strip step (the system libraries are already stripped):
+
+```bash
+NO_STRIP=true pnpm tauri:build
+```
+
+Same workaround applies to other rolling-release distros that ship a recent glibc (Arch, openSUSE Tumbleweed). Debian / Ubuntu typically ship an older glibc and don't hit this.
+
+### Cross-platform note
+
+A Tauri build always produces artifacts for the **host** platform. To ship for Linux + macOS + Windows you need three machines (or three GitHub Actions runners) — there's no cross-compile story for the webview side. The Rust side cross-compiles fine, but the bundled webview can't.
+
+If you want releases for all three from a single push, the standard pattern is a `release.yml` workflow with three matrix jobs (`ubuntu-latest`, `macos-latest`, `windows-latest`), each running `pnpm tauri:build` and uploading its artifact.
 
 ## Layout
 
