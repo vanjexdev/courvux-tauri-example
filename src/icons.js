@@ -8,19 +8,30 @@ import {
 } from 'lucide';
 
 /**
- * Convert a Lucide icon tuple ([tag, attrs, children]) into an SVG string.
- * `size` overrides width/height; `strokeWidth` overrides line thickness.
+ * Convert a Lucide icon (v1 shape — `[[tag, attrs], [tag, attrs], …]`)
+ * into an SVG string. `size` overrides width/height; `strokeWidth`
+ * overrides line thickness. The default Lucide attrs (viewBox, fill,
+ * stroke, linecap, linejoin) are stamped on every output so the icons
+ * always render correctly without an external CSS rule.
  */
-function lucideToSvg(icon, size = 16, strokeWidth = 2) {
-    // Lucide ships each icon as: ['svg', defaultAttrs, [['line', { ... }], …]]
-    const [, defaultAttrs, children] = icon;
-    const attrs = { ...defaultAttrs, width: size, height: size, 'stroke-width': strokeWidth };
+function lucideToSvg(children, size = 16, strokeWidth = 2) {
+    const attrs = {
+        xmlns: 'http://www.w3.org/2000/svg',
+        viewBox: '0 0 24 24',
+        width: size,
+        height: size,
+        fill: 'none',
+        stroke: 'currentColor',
+        'stroke-width': strokeWidth,
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round',
+    };
     const attrStr = Object.entries(attrs)
         .map(([k, v]) => `${k}="${v}"`)
         .join(' ');
     const childStr = children
-        .map(([tag, attrs]) =>
-            `<${tag} ${Object.entries(attrs).map(([k, v]) => `${k}="${v}"`).join(' ')}/>`,
+        .map(([tag, props]) =>
+            `<${tag} ${Object.entries(props).map(([k, v]) => `${k}="${v}"`).join(' ')}/>`,
         )
         .join('');
     return `<svg ${attrStr}>${childStr}</svg>`;
