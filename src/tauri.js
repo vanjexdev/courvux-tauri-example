@@ -123,6 +123,12 @@ export const readProjectFile = (path) => invoke('read_project_file', { path });
 export const writeProjectFile = (path, content) =>
     invoke('write_project_file', { path, content });
 
+/** Create a brand-new file at `path`. Rejects if a file already exists
+ *  there — distinct from `writeProjectFile` so the UI can confirm before
+ *  clobbering. Used by the project sidebar's "+ New File" button. */
+export const createProjectFile = (path, content) =>
+    invoke('create_project_file', { path, content });
+
 /** Most-recently-opened project folders, newest first. Entries whose
  *  folders no longer exist are pruned lazily by the Rust side. */
 export const getRecentProjects = () => invoke('get_recent_projects');
