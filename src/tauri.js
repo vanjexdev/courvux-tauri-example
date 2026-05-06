@@ -85,3 +85,13 @@ export const importMd = (source) => invoke('import_md_file', { source });
  * @returns {Promise<void>}
  */
 export const exportMd = (dest, title, body) => invoke('export_md_file', { dest, title, body });
+
+/**
+ * Drain any .md paths the OS handed us at launch through the file
+ * association (queued in Rust during `setup` because the webview wasn't
+ * ready yet). Subsequent launches are delivered live via the `open-files`
+ * event from the single-instance plugin.
+ *
+ * @returns {Promise<string[]>}
+ */
+export const takePendingOpenFiles = () => invoke('take_pending_open_files');

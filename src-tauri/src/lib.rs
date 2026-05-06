@@ -53,6 +53,10 @@ struct AppStateInner {
     default_notes_dir: PathBuf,
     /// `<app-data>/courvux-tauri-notepad/config.json` — never moves.
     config_path: PathBuf,
+    /// .md paths the OS handed us before the webview was ready (first
+    /// launch via file association). The frontend drains this list with
+    /// `take_pending_open_files` once it's mounted.
+    pending_opens: Vec<String>,
 }
 
 // ── Persisted config ────────────────────────────────────────────────────────
@@ -368,6 +372,16 @@ fn import_md_file(state: State<'_, AppState>, source: String) -> Result<NoteSumm
     Ok(NoteSummary { id, title, updated_at })
 }
 
+/// Drain and return the .md paths the OS asked us to open at launch
+/// (file-association handler in `setup` collected them from argv). The
+/// frontend calls this once on mount and pushes each through the same
+/// import path used by the File → Open menu item.
+#[tauri::command]
+fn take_pending_open_files(state: State<'_, AppState>) -> Vec<String> {
+    let mut inner = state.inner.lock().unwrap();
+    std::mem::take(&mut inner.pending_opens)
+}
+
 /// Export the currently selected note as a portable Markdown file: title
 /// becomes the first H1 heading, then a blank line, then the body. No
 /// YAML frontmatter — the goal is something other Markdown tools can
@@ -424,6 +438,40 @@ fn slugify(title: &str) -> String {
 fn parse_id_from_stem(stem: &str) -> Option<u64> {
     if let Ok(id) = stem.parse::<u64>() { return Some(id); }
     stem.split_once('-').and_then(|(prefix, _)| prefix.parse::<u64>().ok())
+}
+
+/// Filter a process arg list down to absolute .md / .markdown paths that
+/// actually exist on disk. Used both for the first-instance launch (own
+/// argv) and the single-instance callback (a second launch's argv).
+/// Skips the executable path so we don't try to open ourselves.
+fn collect_md_paths<I, S>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let cwd = std::env::current_dir().ok();
+    args.into_iter()
+        .skip(1)
+        .filter_map(|s| {
+            let raw = s.as_ref();
+            if raw.starts_with('-') { return None; }
+            let p = PathBuf::from(raw);
+            let abs = if p.is_absolute() {
+                p
+            } else {
+                cwd.as_ref()?.join(p)
+            };
+            let is_md = abs.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
+                .unwrap_or(false);
+            if is_md && abs.is_file() {
+                Some(abs.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Locate the on-disk file for a given note id. Returns `Some(path)` for
@@ -535,6 +583,28 @@ fn migrate_legacy_json(legacy_json: &Path, notes_dir: &Path) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Single-instance MUST be registered first, per its own docs — it
+        // hooks the OS-level launch path so subsequent invocations of the
+        // app's binary forward their argv to the running instance instead
+        // of spawning a duplicate. Without it, double-clicking a second
+        // .md file from the file manager would launch a fresh notepad
+        // window every time.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            let paths = collect_md_paths(args);
+            // Bring the existing main window to the foreground so the user
+            // sees the file they just double-clicked. `show()` is a no-op
+            // when the window is already visible; `set_focus()` raises it.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+            }
+            if !paths.is_empty() {
+                if let Err(err) = app.emit("open-files", paths) {
+                    eprintln!("[notepad] emit open-files failed: {}", err);
+                }
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         // Persist window position / size / maximized / fullscreen state
         // across launches in `<app-data>/window-state.json`. Uses defaults
@@ -571,11 +641,19 @@ pub fn run() {
             // shows a meaningful error when list_notes returns the IO err).
             let _ = fs::create_dir_all(&notes_dir);
 
+            // First-instance argv: anything matching `*.md` / `*.markdown`
+            // is queued for the frontend to import once it's mounted. The
+            // single-instance plugin handles every *subsequent* launch via
+            // its callback above (which can emit directly because the
+            // webview is alive at that point).
+            let pending_opens = collect_md_paths(std::env::args());
+
             app.manage(AppState {
                 inner: Mutex::new(AppStateInner {
                     notes_dir,
                     default_notes_dir,
                     config_path,
+                    pending_opens,
                 }),
             });
 
@@ -657,6 +735,7 @@ pub fn run() {
             set_auto_save,
             import_md_file,
             export_md_file,
+            take_pending_open_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -7,7 +7,7 @@ import {
     listNotes, readNote, writeNote, deleteNote,
     notesDir, defaultNotesDir, setNotesDir, resetNotesDir,
     getAutoSave, setAutoSave,
-    importMd, exportMd,
+    importMd, exportMd, takePendingOpenFiles,
 } from './tauri.js';
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
@@ -737,11 +737,18 @@ createApp({
                 title: 'Open Markdown file',
             });
             if (!picked) return;
+            await this.importExternalMd(picked);
+        },
+
+        // Shared import path used by File → Open, the OS file-association
+        // launch (Rust pre-mount queue), and live `open-files` events from
+        // the single-instance plugin. Inserts the new note into the sidebar
+        // and selects it so the user sees the imported content immediately.
+        async importExternalMd(path) {
             try {
-                const summary = await importMd(picked);
-                // Insert into the sidebar list. Body stays unloaded — select()
-                // pulls it from disk on demand to keep the import path fast
-                // for big files.
+                const summary = await importMd(path);
+                // Body stays unloaded — select() pulls it from disk on
+                // demand, which keeps the import path fast for big files.
                 this.notes.push({
                     id: summary.id,
                     title: summary.title,
@@ -751,9 +758,11 @@ createApp({
                     _loaded: false,
                 });
                 await this.select(summary.id);
+                return summary;
             } catch (err) {
-                console.error('[notepad] import failed:', err);
+                console.error('[notepad] import failed:', path, err);
                 alert('Open failed: ' + err);
+                return null;
             }
         },
 
@@ -872,6 +881,29 @@ createApp({
         this.cancelAutoSave = () => {
             if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
         };
+
+        // OS file-association entry points. Two paths converge here:
+        //  1. First launch (`<app> note.md` from a file manager double-
+        //     click). The webview isn't ready when Rust's `setup` runs,
+        //     so paths are queued in AppState and we drain the queue here.
+        //  2. Every subsequent launch is intercepted by tauri-plugin-
+        //     single-instance, which emits `open-files` to the running
+        //     window. We import each path and select the last one so the
+        //     user lands on the file they just clicked.
+        try {
+            const pending = await takePendingOpenFiles();
+            for (const path of pending) {
+                await this.importExternalMd(path);
+            }
+        } catch (err) {
+            console.error('[notepad] pending opens drain failed:', err);
+        }
+        listen('open-files', async (e) => {
+            const paths = Array.isArray(e.payload) ? e.payload : [];
+            for (const path of paths) {
+                await this.importExternalMd(path);
+            }
+        }).catch(err => console.error('[notepad] open-files listener failed:', err));
 
         // Listen for native-menu events emitted from src-tauri/src/lib.rs.
         // The handler returns an unlisten function — we don't store it
