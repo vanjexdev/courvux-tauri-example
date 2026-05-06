@@ -547,6 +547,18 @@ fn read_project_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path, e))
 }
 
+/// `mkdir -p` for project folders. Idempotent on existing directories
+/// (so creating `a/b/c` when `a/b` exists is fine), but rejects when
+/// the target path already exists as a file.
+#[tauri::command]
+fn create_project_dir(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if p.is_file() {
+        return Err(format!("path exists as a file: {}", path));
+    }
+    fs::create_dir_all(&p).map_err(|e| format!("mkdir {}: {}", path, e))
+}
+
 /// Create a brand-new project file. Errors if the path already exists
 /// so the UI flow can prompt before clobbering — `write_project_file`
 /// is the unconditional overwrite path used by the auto-save loop.
@@ -909,6 +921,8 @@ pub fn run() {
                 .accelerator("CmdOrCtrl+Shift+S").build(app)?;
             let export_pdf_item = MenuItemBuilder::with_id("export_pdf", "Export PDF\u{2026}")
                 .accelerator("CmdOrCtrl+Shift+P").build(app)?;
+            let export_project_pdf_item = MenuItemBuilder::with_id("export_project_pdf", "Export Project as PDF\u{2026}")
+                .accelerator("CmdOrCtrl+Shift+E").build(app)?;
             let quit_item = PredefinedMenuItem::quit(app, Some("Quit"))?;
 
             let file_menu = SubmenuBuilder::new(app, "File")
@@ -921,6 +935,7 @@ pub fn run() {
                 .item(&save_as_item)
                 .separator()
                 .item(&export_pdf_item)
+                .item(&export_project_pdf_item)
                 .separator()
                 .item(&quit_item)
                 .build()?;
@@ -947,7 +962,7 @@ pub fn run() {
                 if matches!(
                     id,
                     "new" | "open" | "open_folder" | "close_project"
-                        | "save" | "save_as" | "export_pdf"
+                        | "save" | "save_as" | "export_pdf" | "export_project_pdf"
                 ) {
                     if let Err(err) = app.emit("menu", id) {
                         eprintln!("[notepad] emit menu event failed: {}", err);
@@ -976,6 +991,7 @@ pub fn run() {
             read_project_file,
             write_project_file,
             create_project_file,
+            create_project_dir,
             get_recent_projects,
         ])
         .run(tauri::generate_context!())

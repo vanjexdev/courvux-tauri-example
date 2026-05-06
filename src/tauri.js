@@ -129,6 +129,13 @@ export const writeProjectFile = (path, content) =>
 export const createProjectFile = (path, content) =>
     invoke('create_project_file', { path, content });
 
+/** `mkdir -p` for the project. Idempotent on existing directories,
+ *  rejects when the path exists as a file. Used by the project
+ *  sidebar's "+ Folder" button and by `newProjectFile` when the user
+ *  types a name with `/` in it. */
+export const createProjectDir = (path) =>
+    invoke('create_project_dir', { path });
+
 /** Most-recently-opened project folders, newest first. Entries whose
  *  folders no longer exist are pruned lazily by the Rust side. */
 export const getRecentProjects = () => invoke('get_recent_projects');

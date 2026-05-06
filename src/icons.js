@@ -5,7 +5,7 @@
 import {
     Plus, Check, Pencil, Eye, Columns2, X, Save, Folder, Settings,
     PanelLeftClose, PanelLeftOpen, Trash2, FileText, Search, Info,
-    FolderOpen, FolderTree, ChevronRight, ChevronDown, Image,
+    FolderOpen, FolderTree, ChevronRight, ChevronDown, Image, FolderPlus,
 } from 'lucide';
 
 /**
@@ -64,4 +64,5 @@ export const ICONS = {
     chevronRight:   lucideToSvg(ChevronRight),
     chevronDown:    lucideToSvg(ChevronDown),
     image:          lucideToSvg(Image),
+    folderPlus:     lucideToSvg(FolderPlus),
 };
