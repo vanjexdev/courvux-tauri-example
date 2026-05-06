@@ -65,3 +65,23 @@ export const getAutoSave = () => invoke('get_auto_save');
 
 /** Persist the user's auto-save preference. */
 export const setAutoSave = (enabled) => invoke('set_auto_save', { enabled });
+
+/**
+ * Copy a foreign .md file from `source` (absolute path) into the active
+ * notes folder as a brand-new note. Returns the new sidebar summary.
+ *
+ * @param {string} source
+ * @returns {Promise<{ id: number, title: string, updatedAt: number }>}
+ */
+export const importMd = (source) => invoke('import_md_file', { source });
+
+/**
+ * Write the given title + body to `dest` as a portable Markdown file
+ * (no YAML frontmatter — title becomes the first H1 heading).
+ *
+ * @param {string} dest
+ * @param {string} title
+ * @param {string} body
+ * @returns {Promise<void>}
+ */
+export const exportMd = (dest, title, body) => invoke('export_md_file', { dest, title, body });

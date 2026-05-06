@@ -32,7 +32,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::{Emitter, Manager, State};
 
 // ── App state ───────────────────────────────────────────────────────────────
 
@@ -318,6 +319,70 @@ fn set_auto_save(state: State<'_, AppState>, enabled: bool) -> Result<(), String
     save_config(&config_path, &cfg)
 }
 
+// ── Import / export commands (File menu) ────────────────────────────────────
+
+/// Copy a foreign .md file into the active notes folder as a brand-new note.
+/// The file's existing YAML frontmatter wins for the title; otherwise we
+/// fall back to the first `# Heading` line, then to the source filename.
+/// The original file is untouched — this is an import, not a move.
+#[tauri::command]
+fn import_md_file(state: State<'_, AppState>, source: String) -> Result<NoteSummary, String> {
+    let raw = fs::read_to_string(&source).map_err(|e| format!("read {}: {}", source, e))?;
+    let dir = state.inner.lock().unwrap().notes_dir.clone();
+    fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
+
+    let (front, body_after_front) = split_frontmatter(&raw);
+    let parsed_fm = if front.is_empty() { None } else { serde_yaml::from_str::<Frontmatter>(&front).ok() };
+    let (title, body) = match parsed_fm {
+        Some(fm) => (fm.title, body_after_front.to_string()),
+        None => {
+            let h1 = raw.lines()
+                .find(|l| l.starts_with("# "))
+                .map(|l| l.trim_start_matches('#').trim().to_string());
+            let title = h1.unwrap_or_else(|| {
+                PathBuf::from(&source)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Imported")
+                    .to_string()
+            });
+            (title, raw.clone())
+        }
+    };
+
+    let id = now_ms();
+    let updated_at = id;
+    let fm = Frontmatter { title: title.clone(), created_at: id, updated_at };
+    let yaml = serde_yaml::to_string(&fm).map_err(|e| format!("yaml: {}", e))?;
+    let payload = format!("---\n{}---\n\n{}", yaml, body);
+
+    let path = dir.join(format!("{}-{}.md", id, slugify(&title)));
+    let tmp_path = path.with_extension("md.tmp");
+    {
+        let mut f = fs::File::create(&tmp_path).map_err(|e| format!("create tmp: {}", e))?;
+        f.write_all(payload.as_bytes()).map_err(|e| format!("write tmp: {}", e))?;
+        f.sync_all().map_err(|e| format!("fsync: {}", e))?;
+    }
+    fs::rename(&tmp_path, &path).map_err(|e| format!("rename: {}", e))?;
+
+    Ok(NoteSummary { id, title, updated_at })
+}
+
+/// Export the currently selected note as a portable Markdown file: title
+/// becomes the first H1 heading, then a blank line, then the body. No
+/// YAML frontmatter — the goal is something other Markdown tools can
+/// open without parsing our private metadata format.
+#[tauri::command]
+fn export_md_file(dest: String, title: String, body: String) -> Result<(), String> {
+    let trimmed = title.trim();
+    let payload = if trimmed.is_empty() {
+        body
+    } else {
+        format!("# {}\n\n{}", trimmed, body)
+    };
+    fs::write(&dest, payload).map_err(|e| format!("write {}: {}", dest, e))
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn now_ms() -> u64 {
@@ -513,6 +578,70 @@ pub fn run() {
                     config_path,
                 }),
             });
+
+            // ── Native menu ────────────────────────────────────────────────
+            //
+            // File submenu wires custom items that emit `menu` events to the
+            // webview (handled in main.js → openMd / forceSave / saveAs /
+            // exportPdf / newNote). Edit submenu uses Tauri's predefined
+            // platform-native items (cut/copy/paste/undo/redo/select_all)
+            // which trigger the focused element's native handlers without an
+            // IPC roundtrip — this is what lets <textarea> / <input> get
+            // working keyboard menus on every OS.
+            //
+            // Accelerators chosen to NOT collide with the existing JS keydown
+            // handler in main.js: Ctrl+P stays mapped to cycleView (no menu
+            // accel), Export PDF uses Ctrl+Shift+P instead.
+            let new_item = MenuItemBuilder::with_id("new", "New Note")
+                .accelerator("CmdOrCtrl+N").build(app)?;
+            let open_item = MenuItemBuilder::with_id("open", "Open\u{2026}")
+                .accelerator("CmdOrCtrl+O").build(app)?;
+            let save_item = MenuItemBuilder::with_id("save", "Save")
+                .accelerator("CmdOrCtrl+S").build(app)?;
+            let save_as_item = MenuItemBuilder::with_id("save_as", "Save As\u{2026}")
+                .accelerator("CmdOrCtrl+Shift+S").build(app)?;
+            let export_pdf_item = MenuItemBuilder::with_id("export_pdf", "Export PDF\u{2026}")
+                .accelerator("CmdOrCtrl+Shift+P").build(app)?;
+            let quit_item = PredefinedMenuItem::quit(app, Some("Quit"))?;
+
+            let file_menu = SubmenuBuilder::new(app, "File")
+                .item(&new_item)
+                .item(&open_item)
+                .separator()
+                .item(&save_item)
+                .item(&save_as_item)
+                .separator()
+                .item(&export_pdf_item)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+
+            let undo  = PredefinedMenuItem::undo(app, Some("Undo"))?;
+            let redo  = PredefinedMenuItem::redo(app, Some("Redo"))?;
+            let cut   = PredefinedMenuItem::cut(app, Some("Cut"))?;
+            let copy  = PredefinedMenuItem::copy(app, Some("Copy"))?;
+            let paste = PredefinedMenuItem::paste(app, Some("Paste"))?;
+            let select_all = PredefinedMenuItem::select_all(app, Some("Select All"))?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .item(&undo).item(&redo).separator()
+                .item(&cut).item(&copy).item(&paste).separator()
+                .item(&select_all)
+                .build()?;
+
+            let menu = MenuBuilder::new(app)
+                .items(&[&file_menu, &edit_menu])
+                .build()?;
+            app.set_menu(menu)?;
+
+            app.on_menu_event(|app, event| {
+                let id = event.id().as_ref();
+                if matches!(id, "new" | "open" | "save" | "save_as" | "export_pdf") {
+                    if let Err(err) = app.emit("menu", id) {
+                        eprintln!("[notepad] emit menu event failed: {}", err);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -526,6 +655,8 @@ pub fn run() {
             reset_notes_dir,
             get_auto_save,
             set_auto_save,
+            import_md_file,
+            export_md_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
