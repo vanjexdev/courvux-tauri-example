@@ -395,6 +395,10 @@ fn migrate_legacy_json(legacy_json: &Path, notes_dir: &Path) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Persist window position / size / maximized / fullscreen state
+        // across launches in `<app-data>/window-state.json`. Uses defaults
+        // (all flags set, restore on startup) — no extra config needed.
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let data_dir = app
                 .path()

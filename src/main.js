@@ -12,6 +12,10 @@ import { ICONS } from './icons.js';
 // serves it from the same origin so the strict CSP `img-src 'self' data:`
 // keeps holding.
 import logoUrl from './assets/logo.png';
+// Reading the version straight from package.json keeps the About dialog
+// in sync with whatever `pnpm version` last bumped — no second source
+// of truth to update on every release.
+import { version as APP_VERSION } from '../package.json';
 
 // Note: we used to lean on a generic `debounce()` helper for the auto-save
 // schedule, but that hides the timer from the caller. The auto-save needs
@@ -44,6 +48,13 @@ createApp({
                     </h1>
                     <div class="flex items-center gap-1">
                         <button
+                            @click="aboutOpen = true"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="About this app"
+                            title="About (Ctrl+I)">
+                            <span cv-html.raw="icons.info" aria-hidden="true"></span>
+                        </button>
+                        <button
                             @click="openSettings()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
                             aria-label="Open settings"
@@ -60,11 +71,39 @@ createApp({
                     </div>
                 </header>
 
+                <!-- Title-only search. Body search would force loading
+                     every .md from disk on each keystroke (against the
+                     lazy-load pattern); leaving that for a future
+                     "advanced search" command that can hit Rust directly. -->
+                <div class="px-3 py-2 border-b border-zinc-800">
+                    <div class="relative">
+                        <span cv-html.raw="icons.search"
+                              aria-hidden="true"
+                              class="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none"></span>
+                        <input
+                            type="search"
+                            cv-model="searchQuery"
+                            placeholder="Search notes…"
+                            aria-label="Filter notes by title"
+                            class="w-full pl-7 pr-7 py-1.5 text-xs rounded bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/60" />
+                        <button
+                            cv-if="searchQuery"
+                            @click="searchQuery = ''"
+                            class="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-100"
+                            aria-label="Clear search">
+                            <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                </div>
+
                 <ul class="flex-1 overflow-y-auto py-2">
                     <li cv-if="notes.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
                         No notes yet. Click <span class="text-emerald-400">+ New</span> to create one.
                     </li>
-                    <li cv-for="note in sortedNotes"
+                    <li cv-else-if="filteredNotes.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
+                        No notes match "<span class="text-zinc-300">{{ searchQuery }}</span>".
+                    </li>
+                    <li cv-for="note in filteredNotes"
                         :key="note.id"
                         @click="select(note.id)"
                         :class="note.id === selectedId
@@ -307,6 +346,55 @@ createApp({
                     </div>
                 </div>
             </div>
+
+            <!-- ── About modal ─────────────────────────────────────────── -->
+            <div cv-if="aboutOpen"
+                 @click.self="aboutOpen = false"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="about-title"
+                 class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl">
+                    <header class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
+                        <h2 id="about-title" class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
+                            <span cv-html.raw="icons.info" aria-hidden="true"></span>
+                            <span>About</span>
+                        </h2>
+                        <button
+                            @click="aboutOpen = false"
+                            class="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="Close about"
+                            title="Close">
+                            <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                        </button>
+                    </header>
+
+                    <div class="px-5 py-6 text-center">
+                        <img :src="logoUrl" alt="Courvux Notepad" width="96" height="96"
+                             class="mx-auto mb-4" />
+                        <h3 class="text-base font-semibold text-zinc-100">Courvux Notepad</h3>
+                        <p class="text-xs text-zinc-500 mt-1">Version {{ appVersion }}</p>
+                        <p class="text-xs text-zinc-400 mt-4 leading-relaxed">
+                            Notepad demo built with the
+                            <a href="https://github.com/vanjexdev/courvux"
+                               target="_blank" rel="noopener"
+                               class="text-emerald-400 hover:text-emerald-300">Courvux</a>
+                            reactive UI framework, running inside
+                            <a href="https://tauri.app/" target="_blank" rel="noopener"
+                               class="text-emerald-400 hover:text-emerald-300">Tauri 2</a>
+                            with strict CSP and no
+                            <code class="text-zinc-500">unsafe-eval</code>.
+                        </p>
+                    </div>
+
+                    <footer class="px-5 py-3 border-t border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
+                        <span>MIT · © {{ appYear }} Vanjex</span>
+                        <a href="https://github.com/vanjexdev/courvux-tauri-example"
+                           target="_blank" rel="noopener"
+                           class="text-emerald-400 hover:text-emerald-300">View source ↗</a>
+                    </footer>
+                </div>
+            </div>
         </div>
     `,
     data: {
@@ -322,7 +410,17 @@ createApp({
         sidebarWidth: 256,
         resizing: false,
 
+        // Sidebar search — title-only filter. Empty string = show all.
+        searchQuery: '',
+
         settingsOpen: false,
+        aboutOpen: false,
+        // Inlined at build time from package.json so the About dialog
+        // can't drift from the actual release version. The year is stamped
+        // when the app starts — reasonable for a demo; fancier apps would
+        // bake it in at build via a Vite define instead of recomputing.
+        appVersion: APP_VERSION,
+        appYear: new Date().getFullYear(),
         // Inline status banner inside the settings modal — replaces the
         // browser-style `alert()` calls so failures (write-probe rejected
         // a folder, set_auto_save couldn't reach the config, etc.) stay
@@ -346,6 +444,22 @@ createApp({
     computed: {
         sortedNotes() {
             return [...this.notes].sort((a, b) => b.updatedAt - a.updatedAt);
+        },
+        // Title-only filter applied on top of the recency-sorted list.
+        // Match is case-insensitive substring against the trimmed title;
+        // an empty title falls back to "Untitled" so a search like
+        // `untit` finds notes the user hasn't named yet. Body search is
+        // intentionally NOT implemented here — that would require lazy-
+        // loading every .md from disk on each keystroke and goes against
+        // the current schema. A future "advanced search" command can hit
+        // the Rust side directly when the user opts into a deeper scan.
+        filteredNotes() {
+            const q = this.searchQuery.trim().toLowerCase();
+            if (!q) return this.sortedNotes;
+            return this.sortedNotes.filter(n => {
+                const title = (n.title.trim() || 'Untitled').toLowerCase();
+                return title.includes(q);
+            });
         },
         selected() {
             return this.notes.find(n => n.id === this.selectedId) ?? null;
@@ -666,6 +780,12 @@ createApp({
         };
 
         window.addEventListener('keydown', (e) => {
+            // Esc closes whichever modal is open. Cheap escape hatch when
+            // the user reaches for the X with the keyboard.
+            if (e.key === 'Escape') {
+                if (this.settingsOpen) { this.settingsOpen = false; return; }
+                if (this.aboutOpen)    { this.aboutOpen = false;    return; }
+            }
             const meta = e.ctrlKey || e.metaKey;
             if (!meta) return;
             const k = e.key.toLowerCase();
@@ -674,6 +794,17 @@ createApp({
             else if (k === 'p') { e.preventDefault(); this.cycleView(); }
             else if (k === 'b') { e.preventDefault(); this.toggleSidebar(); }
             else if (k === ',') { e.preventDefault(); this.settingsOpen ? (this.settingsOpen = false) : this.openSettings(); }
+            else if (k === 'i') { e.preventDefault(); this.aboutOpen = !this.aboutOpen; }
+            else if (k === 'f') {
+                // Focus the sidebar search input. Open the sidebar if it's
+                // collapsed so the input actually exists in the DOM first.
+                e.preventDefault();
+                if (!this.sidebarOpen) this.toggleSidebar();
+                this.$nextTick(() => {
+                    const input = this.$el.querySelector('aside input[type="search"]');
+                    input?.focus();
+                });
+            }
         });
 
         window.addEventListener('beforeunload', (e) => {
