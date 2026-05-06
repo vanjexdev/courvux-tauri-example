@@ -531,6 +531,42 @@ createApp({
                 </div>
             </div>
 
+            <!-- ── Name input modal (replaces window.prompt) ───────────── -->
+            <div cv-if="nameInput"
+                 @click.self="cancelNameInput()"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="name-input-title"
+                 class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl">
+                    <header class="px-5 py-3 border-b border-zinc-800">
+                        <h2 id="name-input-title" class="text-sm font-semibold text-zinc-100">{{ nameInput.title }}</h2>
+                        <p cv-if="nameInput.hint" class="text-[11px] text-zinc-500 mt-0.5">{{ nameInput.hint }}</p>
+                    </header>
+                    <div class="px-5 py-4">
+                        <input
+                            type="text"
+                            cv-model="nameInput.value"
+                            @keydown.enter="confirmNameInput()"
+                            @keydown.escape="cancelNameInput()"
+                            data-name-input
+                            class="w-full px-3 py-2 text-sm rounded bg-zinc-950 border border-zinc-800 text-zinc-100 outline-none focus:border-emerald-500/60 font-mono" />
+                    </div>
+                    <footer class="px-5 py-3 border-t border-zinc-800 flex items-center justify-end gap-2">
+                        <button
+                            @click="cancelNameInput()"
+                            class="px-3 py-1.5 text-xs rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800">
+                            Cancel
+                        </button>
+                        <button
+                            @click="confirmNameInput()"
+                            class="px-3 py-1.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white">
+                            OK
+                        </button>
+                    </footer>
+                </div>
+            </div>
+
             <!-- ── Image preview modal ─────────────────────────────────── -->
             <div cv-if="imagePreview"
                  @click.self="imagePreview = null"
@@ -623,6 +659,11 @@ createApp({
         // Image preview modal. Set when the user clicks an image entry
         // in the project tree (or an inline image inside the preview).
         imagePreview: null,      // { src, alt }
+        // Name-input modal — replaces `window.prompt()` because WKWebView
+        // on macOS strips the prompt() implementation for security and
+        // returns null silently with no UI. Holds the in-flight resolver
+        // until the user submits or cancels.
+        nameInput: null,         // { title, hint, value, resolve }
 
         // ── Library mode state (unchanged) ────────────────────────────────
         notes: [],
@@ -1086,9 +1127,42 @@ createApp({
             }
         },
 
-        // Create a new file or folder at the project root. The browser
-        // `prompt()` is sufficient here — it's modal, OS-styled in Tauri,
-        // and avoids dragging in a third dialog component for a one-off.
+        // Promise-based name prompt backed by an in-app modal. Replaces
+        // `window.prompt()` because WKWebView (macOS) strips the prompt()
+        // implementation for security and returns null silently with no
+        // UI — buttons that depended on it appeared dead on Mac with no
+        // error in the console.
+        askName(title, defaultValue, hint) {
+            return new Promise(resolve => {
+                this.nameInput = { title, hint: hint || '', value: defaultValue || '', resolve };
+                // Focus the input on next tick (after cv-if mounts the
+                // modal) and select-all so the user can immediately type
+                // over the suggested default.
+                this.$nextTick(() => {
+                    const input = this.$el.querySelector('[data-name-input]');
+                    if (input) {
+                        input.focus();
+                        input.select();
+                    }
+                });
+            });
+        },
+
+        confirmNameInput() {
+            if (!this.nameInput) return;
+            const { value, resolve } = this.nameInput;
+            this.nameInput = null;
+            resolve(value);
+        },
+
+        cancelNameInput() {
+            if (!this.nameInput) return;
+            const { resolve } = this.nameInput;
+            this.nameInput = null;
+            resolve(null);
+        },
+
+        // Create a new file or folder at the project root.
         //
         // Slash semantics:
         //   `notes/2026/draft.md`  → mkdir -p `notes/2026` then create file
@@ -1100,14 +1174,22 @@ createApp({
         // having the slash itself stripped.
         async newProjectFile() {
             if (!this.project) return;
-            const raw = window.prompt('New file (use "/" for subfolders, trailing "/" = folder only):', 'untitled.md');
+            const raw = await this.askName(
+                'New file',
+                'untitled.md',
+                'Use "/" for subfolders, trailing "/" makes it a folder.',
+            );
             if (!raw) return;
             await this.createProjectEntry(raw);
         },
 
         async newProjectFolder() {
             if (!this.project) return;
-            const raw = window.prompt('New folder (use "/" for nested):', 'subfolder');
+            const raw = await this.askName(
+                'New folder',
+                'subfolder',
+                'Use "/" for nested folders (e.g. "docs/2026").',
+            );
             if (!raw) return;
             // Force folder semantics with a trailing slash so the shared
             // helper takes the mkdir-p branch even when the user typed a
@@ -1589,6 +1671,7 @@ createApp({
             // Esc closes whichever modal is open. Cheap escape hatch when
             // the user reaches for the X with the keyboard.
             if (e.key === 'Escape') {
+                if (this.nameInput)    { this.cancelNameInput();    return; }
                 if (this.imagePreview) { this.imagePreview = null;  return; }
                 if (this.settingsOpen) { this.settingsOpen = false; return; }
                 if (this.aboutOpen)    { this.aboutOpen = false;    return; }

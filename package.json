@@ -1,7 +1,7 @@
 {
     "name": "courvux-tauri-notepad",
     "private": true,
-    "version": "0.9.0",
+    "version": "0.9.1",
     "description": "Notepad demo app — Courvux + Tauri 2 + Tailwind 4 with build-time precompiled expressions and strict CSP (script-src 'self', no unsafe-eval).",
     "type": "module",
     "scripts": {
