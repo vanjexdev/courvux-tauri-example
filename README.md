@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="status: demo"        src="https://img.shields.io/badge/status-demo-blue">
+  <img alt="version: 0.9.0"      src="https://img.shields.io/badge/version-0.9.0-blue">
   <img alt="courvux: 0.7.1"      src="https://img.shields.io/badge/courvux-0.7.1-success">
   <img alt="tauri: 2"            src="https://img.shields.io/badge/tauri-2-orange">
   <img alt="license: MIT"        src="https://img.shields.io/badge/license-MIT-lightgrey">
@@ -17,24 +17,91 @@
 
 ## What it shows
 
-- **Courvux 0.7.1** mounted inside a Tauri WebView, with sidebar list, inline editing, and reactive computed (`wordCount`, `charCount`, `sortedNotes`, `renderedBody`).
+### Foundation
+
+- **Courvux 0.7.1** mounted inside a Tauri WebView, with reactive computed properties, `cv-if`/`cv-else-if`/`cv-for`, two-way `cv-model`, and `@event` handlers — all the reactivity an editor UI needs without an external state manager.
 - **`courvux-precompile` Vite plugin** active — every template expression is compiled to a JS arrow function at build time, so the runtime never calls `new Function`. The Tauri `tauri.conf.json` ships `script-src 'self'` and the `<meta http-equiv="Content-Security-Policy">` in `index.html` matches; no `unsafe-eval` anywhere.
 - **Tailwind 4** via `@tailwindcss/vite`. Single `@import "tailwindcss"` in `src/style.css`, no config file.
-- **Markdown editing + live preview** via [`marked`](https://marked.js.org/) → [`DOMPurify`](https://github.com/cure53/DOMPurify). Three view modes — Edit / Split / Preview — cycle with `Ctrl+P`. The preview pane is fully sanitized so a hostile paste can't execute scripts even with strict CSP.
-- **One Markdown file per note** under `<app-data>/courvux-tauri-notepad/notes/<id>.md`. Files start with a YAML frontmatter block (`title`, `createdAt`, `updatedAt`) and end with the raw Markdown body. Open in any editor, sync with Dropbox / Syncthing / git, no proprietary store.
+- **Lucide icons** throughout the UI — toolbar, sidebar header, settings panel, file tree — bundled as static SVG strings via a tiny `lucideToSvg()` helper so re-renders are free.
+
+### Two top-level modes
+
+The app boots into one of two modes, switchable from the **File** menu:
+
+- **Library mode** — the original flat notes folder owned by the app. Notes live as `<id>-<slug>.md` files with a YAML frontmatter block (`title`, `createdAt`, `updatedAt`); the slug suffix keeps filenames recognizable when you open the folder in your own file manager.
+- **Project mode** — open an arbitrary folder anywhere on disk and edit its `.md` files **in place**. No slug rename, no frontmatter wrapping — the project stays usable in any other editor, in git, in static-site generators.
+
+The chosen mode + last opened project are persisted across launches.
+
+### Library mode
+
+- **Markdown editing + live preview** via [`marked`](https://marked.js.org/) → [`DOMPurify`](https://github.com/cure53/DOMPurify). Three view modes — **Edit / Split / Preview** — cycle with `Ctrl+P`. The preview pane is fully sanitized so a hostile paste can't execute scripts even with strict CSP.
+- **One Markdown file per note** at `<notes-dir>/<id>-<slug>.md`. Frontmatter on top, raw Markdown body below. Open in any editor, sync with Dropbox / Syncthing / git, no proprietary store.
 - **Save state machine.** New notes start `unsaved` and require `Ctrl+S` (or the Save button) for the first commit. After that, every keystroke promotes the note to `dirty` and auto-saves 600 ms later. Status bar shows `○ Unsaved` / `● Saving…` / `✓ Saved`.
-- **Keyboard shortcuts:**
-  - `Ctrl/Cmd + N` — new note
-  - `Ctrl/Cmd + S` — save (force, ignores debounce)
-  - `Ctrl/Cmd + P` — cycle Edit / Split / Preview
-  - `Ctrl/Cmd + B` — toggle sidebar
-  - `Ctrl/Cmd + ,` — open / close settings
+- **Sidebar search** (`Ctrl+F`) — case-insensitive, title-only filter against the recency-sorted list. Body search is intentionally *not* implemented — that would force loading every `.md` from disk on every keystroke. A future Rust-side advanced search can do that on demand.
+- **Custom notes folder.** Settings panel (gear icon, `Ctrl+,`) lets the user pick any folder on disk as the notes location via the native folder picker. Choice persists in `<app-data>/courvux-tauri-notepad/config.json` along with the auto-save preference. "Reset to default" reverts.
+
+### Project mode
+
+- **Native folder picker** opens any directory as a project. Project root + recents are persisted in `config.json`; the welcome screen lists recents so re-opening is one click.
+- **Tree sidebar** with chevron expand/collapse per directory and per-kind icons (folder / `.md` / image / other). Hidden files and a denylist of noisy directories (`node_modules`, `target`, `.git`, `dist`, `.venv`, …) are skipped; recursion is capped at depth 10 / 5000 entries to keep huge repos safe to open.
+- **Edit `.md` in place** with the same Markdown editor as library mode. Atomic tmp + fsync + rename writes. The auto-save scheduler snapshots the active mode + key (note id or file path) so a switch never lets a stale write fire against the wrong target.
+- **Image preview modal.** Click any image entry in the tree to view it inline in a backdrop modal — Esc / click-outside dismisses.
+- **Inline image rendering** in the Markdown preview. `![alt](images/foo.jpg)` resolves relative to each file's parent directory and serves through Tauri's `asset://` protocol; the project root is granted to the asset scope on open.
+- **Create files / folders.** "+ New" prompts for a name; `notes/2026/draft.md` creates the chain then the file, a trailing `/` makes the entry folder-only. "+ Folder" runs the same flow, folder-only. Each `/`-segment is sanitized individually so a name like `docs:bad/intro.md` becomes `docsbad/intro.md` instead of losing the slash.
+
+### Native menu bar
+
+Tauri's platform-native menu, wired in `src-tauri/src/lib.rs` setup:
+
+- **File** — New Note (`Ctrl+N`) · Open File… (`Ctrl+O`) · Open Folder… (`Ctrl+Shift+O`) · Close Project (`Ctrl+Shift+W`) · Save (`Ctrl+S`) · Save As… (`Ctrl+Shift+S`) · Export PDF… (`Ctrl+Shift+P`) · Export Project as PDF… (`Ctrl+Shift+E`) · Quit
+- **Edit** — Undo · Redo · Cut · Copy · Paste · Select All
+
+Edit-menu items use Tauri's `PredefinedMenuItem` so they trigger the focused element's native handler without an IPC bounce — `<textarea>` and `<input>` get working keyboard menus on every OS for free.
+
+### `.md` file association
+
+`bundle.fileAssociations` in `tauri.conf.json` registers `.md` and `.markdown` (mime: `text/markdown`) so the installed app shows up as a handler in the file manager. Linux builds (`.deb` / `.rpm` / `.appimage`) pick this up via the generated `.desktop` MimeType entry.
+
+`tauri-plugin-single-instance` (registered first, per its docs) forwards every double-click of a `.md` file to the running notepad instead of launching a fresh window. The handler raises + focuses the existing main window, then imports the path into the active notes folder via the same code path as `File → Open File`.
+
+### PDF export
+
+Two flows:
+
+- **Export PDF** (single file, `Ctrl+Shift+P`) — flips to preview view and calls `window.print()`. Print CSS hides every chrome surface and reflows the rendered Markdown to a clean black-on-white page. **Caveat**: WebKit2GTK's print pipeline does not preserve `<a href>` link annotations on Linux, so links in the resulting PDF are visible but not clickable.
+- **Export Project as PDF** (`Ctrl+Shift+E`) — bundles every `.md` in the project into a single PDF generated with [`jsPDF`](https://github.com/parallax/jsPDF). A hand-walked DOM walker emits headings, paragraphs, lists, code blocks, blockquotes, and images one element at a time, **with real PDF link annotations**:
+  - `https://…` → URI annotation (clickable in any reader)
+  - `[other](other.md)` → resolved against the project's path map and emitted as a PageJump annotation pointing at that file's first page
+  - Each section starts on its own page, prefixed by its path-from-root as a colored title
+  - jsPDF chunk (~600 KB with html2canvas pulled in by its bundle) is dynamically imported on first export, so the main app payload stays at ~250 KB
+
+### UI polish
+
+- **Window state persistence** via `tauri-plugin-window-state` — size, position, maximized, fullscreen all restored across launches.
+- **Collapsible + resizable sidebar.** Drag the right edge to resize (180 px – 480 px); toggle visibility from the toolbar or `Ctrl+B`. Width and open state both persist in `localStorage`.
+- **About dialog** (`Ctrl+I`) — version (read from `package.json` at build time so it can't drift), license, source link. External links go through `tauri-plugin-opener` so they open in the OS default browser instead of no-oping inside the sandboxed webview.
 - **Window-close guard.** `beforeunload` blocks accidental quit while the current note is `unsaved` or `dirty`.
-- **Migration from v0.1.0.** If a `notes.json` file from the previous JSON-blob format exists in the app-data directory, the Rust side reads it once on startup, writes each entry as its own `.md` file, and removes the legacy file.
-- **Syntax-highlighted code fences** via [Prism](https://prismjs.com/). Bundled languages: bash, css, diff, go, html/xml, java, javascript, json, markdown, python, rust, sql, toml, typescript, yaml. Tomorrow Night theme to match the dark UI.
-- **Lucide icons** throughout the UI — toolbar, sidebar header, settings panel — instead of ASCII glyphs.
-- **Settings panel** (gear icon, sidebar header, `Ctrl+,`) lets the user pick any folder on disk as the notes location via the native folder picker (`@tauri-apps/plugin-dialog`). Choice persists in `<app-data>/courvux-tauri-notepad/config.json`. "Reset to default" reverts.
-- **Collapsible + resizable sidebar.** Drag the right edge to resize (180px – 480px); toggle visibility from the toolbar or `Ctrl+B`. Width and open state both persist in `localStorage`.
+- **Migration from v0.1.0.** A legacy `notes.json` blob in the app-data directory is read once on startup, written out as one `.md` file per entry, and the old file is removed.
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl/Cmd + N` | New note (library) / New file in project |
+| `Ctrl/Cmd + O` | Open file (import .md into notes folder) |
+| `Ctrl/Cmd + Shift + O` | Open folder (project mode) |
+| `Ctrl/Cmd + Shift + W` | Close project |
+| `Ctrl/Cmd + S` | Save (force, ignores debounce) |
+| `Ctrl/Cmd + Shift + S` | Save As… (export current note as standalone .md) |
+| `Ctrl/Cmd + Shift + P` | Export current view as PDF |
+| `Ctrl/Cmd + Shift + E` | Export project as PDF |
+| `Ctrl/Cmd + P` | Cycle Edit / Split / Preview |
+| `Ctrl/Cmd + B` | Toggle sidebar |
+| `Ctrl/Cmd + F` | Focus sidebar search (library mode) |
+| `Ctrl/Cmd + I` | About dialog |
+| `Ctrl/Cmd + ,` | Settings |
+| `Esc` | Close any open modal |
 
 ## Dev
 
@@ -54,8 +121,6 @@ Common to every platform:
 - **Rust toolchain** — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
 ### Linux (Fedora 40+)
-
-System packages (system → no userland workaround):
 
 ```bash
 sudo dnf install -y \
@@ -108,6 +173,13 @@ Outputs land in `src-tauri/target/release/bundle/`:
 
 The `bundle.targets` array in `src-tauri/tauri.conf.json` controls which formats to build. Currently set to `["appimage", "rpm", "deb"]` for the Linux Fedora-targeted host that produced this repo's first release; on macOS / Windows the CLI ignores Linux-only targets and emits the platform-native ones automatically.
 
+To register the `.md` file association on Linux, install the produced package:
+
+```bash
+sudo dnf upgrade src-tauri/target/release/bundle/rpm/*.rpm
+xdg-mime default dev.vanjex.courvux-tauri-notepad.desktop text/markdown
+```
+
 ### Fedora 40+ AppImage gotcha
 
 `linuxdeploy` ships an old `strip` binary inside its AppImage that doesn't recognize the `.relr.dyn` section type emitted by glibc on Fedora 40+. The build crashes mid-bundle with `unknown type [0x13] section .relr.dyn`. Skip the strip step (the system libraries are already stripped):
@@ -133,16 +205,21 @@ courvux-tauri-example/
 ├── index.html                    # CSP meta + #app mount point
 ├── src/
 │   ├── main.js                   # Courvux app — entire UI lives here
-│   ├── style.css                 # @import "tailwindcss"
-│   └── tauri.js                  # invoke wrapper (loadNotes / saveNotes / notesPath)
+│   ├── pdf-export.js             # jsPDF DOM walker + PdfBuilder
+│   ├── markdown.js               # marked + Prism + DOMPurify pipeline
+│   ├── icons.js                  # Lucide → static SVG strings
+│   ├── style.css                 # @import "tailwindcss" + print + markdown body
+│   ├── tauri.js                  # invoke wrappers for every Rust command
+│   └── assets/                   # logo, etc.
 ├── src-tauri/
 │   ├── Cargo.toml
 │   ├── build.rs
-│   ├── tauri.conf.json           # productName, window config, CSP, bundle targets
+│   ├── tauri.conf.json           # productName, window, CSP, fileAssociations, bundle
+│   ├── capabilities/default.json # core + dialog + opener scope
 │   ├── icons/                    # generated via `cargo tauri icon`
 │   └── src/
 │       ├── main.rs               # `windows_subsystem` guard + delegates to lib
-│       └── lib.rs                # tauri commands + atomic file IO + Builder::run
+│       └── lib.rs                # tauri commands + atomic file IO + menu + Builder::run
 ├── README.md
 └── LICENSE
 ```
@@ -154,20 +231,34 @@ courvux-tauri-example/
 For this app, the build report reads:
 
 ```
-[courvux-precompile] processed 1 file(s), 18 expression(s) precompiled, 0 template(s) fell back to runtime new Function.
+[courvux-precompile] processed 1 file(s), 125 expression(s) precompiled, 0 template(s) fell back to runtime new Function.
 ```
 
 Zero fallbacks → the runtime never has to call `new Function`, and the strict `script-src 'self'` CSP holds.
 
-## Notes file location
+## Storage locations
 
-The `Footer` of the sidebar shows the resolved storage path. On Linux it lands at:
+**Library notes** (`<app-data>/courvux-tauri-notepad/notes/<id>-<slug>.md`):
 
 ```
-$XDG_DATA_HOME/dev.vanjex.courvux-tauri-notepad/notes.json
+$XDG_DATA_HOME/dev.vanjex.courvux-tauri-notepad/notes/
 # typically:
-~/.local/share/dev.vanjex.courvux-tauri-notepad/notes.json
+~/.local/share/dev.vanjex.courvux-tauri-notepad/notes/
 ```
+
+The footer of the sidebar shows the resolved storage path. Each note is one Markdown file; the slug suffix is derived from the title for human readability when you open the folder in another editor.
+
+**App config** — same parent directory, `config.json`:
+
+```json
+{ "notesDir": null, "autoSave": true, "recentProjects": [...] }
+```
+
+`notesDir` overrides the default notes location; `recentProjects` is the most-recently-opened-folders list shown on the welcome screen.
+
+**Window state** — `<app-data>/courvux-tauri-notepad/window-state.json`, managed by `tauri-plugin-window-state`.
+
+**Project mode files** — wherever the user opened them. The app never copies project files to its own data dir; they stay in their original location.
 
 `app_data_dir()` respects the bundle identifier from `tauri.conf.json`, so two installs of different bundles never share state.
 
