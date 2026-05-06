@@ -8,6 +8,10 @@ import {
 } from './tauri.js';
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
+// Vite bundles the asset and gives us a hashed URL; the bundled webview
+// serves it from the same origin so the strict CSP `img-src 'self' data:`
+// keeps holding.
+import logoUrl from './assets/logo.png';
 
 // Note: we used to lean on a generic `debounce()` helper for the auto-save
 // schedule, but that hides the timer from the caller. The auto-save needs
@@ -34,7 +38,10 @@ createApp({
                 class="shrink-0 border-r border-zinc-800 bg-zinc-900/60 backdrop-blur flex flex-col relative">
 
                 <header class="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-2">
-                    <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate">Notepad</h1>
+                    <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate inline-flex items-center gap-2">
+                        <img :src="logoUrl" alt="" width="20" height="20" class="shrink-0" aria-hidden="true" />
+                        <span>Notepad</span>
+                    </h1>
                     <div class="flex items-center gap-1">
                         <button
                             @click="openSettings()"
@@ -331,6 +338,10 @@ createApp({
         icons: ICONS,
         // Same icons but at 32px for the empty-state hero glyph.
         iconsLg: {},
+        // Vite-resolved URL for the brand logo. Bundled into dist/ at
+        // build time so the webview serves it from `self` and the strict
+        // CSP `img-src 'self' data:` keeps holding.
+        logoUrl,
     },
     computed: {
         sortedNotes() {
