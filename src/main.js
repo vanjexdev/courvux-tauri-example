@@ -4,14 +4,16 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
     listNotes, readNote, writeNote, deleteNote,
     notesDir, defaultNotesDir, setNotesDir, resetNotesDir,
+    getAutoSave, setAutoSave,
 } from './tauri.js';
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
 
-const debounce = (fn, ms) => {
-    let t;
-    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-};
+// Note: we used to lean on a generic `debounce()` helper for the auto-save
+// schedule, but that hides the timer from the caller. The auto-save needs
+// to be cancelable from outside (so a fast Save/select doesn't race the
+// pending write), and the inline scheduler in onMount() exposes both
+// `schedule` and `cancel` through closure.
 
 // Sidebar width is a UI preference, not a per-note value — persist in
 // localStorage so it survives across sessions on the same install.
@@ -35,10 +37,11 @@ createApp({
                     <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate">Notepad</h1>
                     <div class="flex items-center gap-1">
                         <button
-                            @click="settingsOpen = true"
+                            @click="openSettings()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-                            title="Settings">
-                            <span cv-html.raw="icons.settings"></span>
+                            aria-label="Open settings"
+                            title="Settings (Ctrl+,)">
+                            <span cv-html.raw="icons.settings" aria-hidden="true"></span>
                         </button>
                         <button
                             @click="newNote()"
@@ -79,11 +82,15 @@ createApp({
                     {{ storageDir || 'Loading…' }}
                 </footer>
 
-                <!-- Drag handle on the right edge to resize the sidebar. -->
+                <!-- Drag handle on the right edge to resize the sidebar.
+                     Hidden from the a11y tree because there's no keyboard
+                     equivalent yet — Ctrl+B toggle is the screen-reader
+                     story. Future: arrow-key resize when focused. -->
                 <div
                     @mousedown="startResize($event)"
                     class="absolute top-0 right-0 h-full w-1 cursor-col-resize hover:bg-emerald-500/50"
                     :class="resizing ? 'bg-emerald-500/70' : ''"
+                    aria-hidden="true"
                     title="Drag to resize"></div>
             </aside>
 
@@ -95,8 +102,10 @@ createApp({
                         <button
                             @click="toggleSidebar()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :aria-label="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'"
+                            :aria-expanded="sidebarOpen ? 'true' : 'false'"
                             :title="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'">
-                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen"></span>
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
                         </button>
                     </header>
                     <div class="flex-1 flex items-center justify-center text-zinc-600">
@@ -115,8 +124,10 @@ createApp({
                         <button
                             @click="toggleSidebar()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :aria-label="sidebarOpen ? 'Hide sidebar (Ctrl+B)' : 'Show sidebar (Ctrl+B)'"
+                            :aria-expanded="sidebarOpen ? 'true' : 'false'"
                             :title="sidebarOpen ? 'Hide sidebar (Ctrl+B)' : 'Show sidebar (Ctrl+B)'">
-                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen"></span>
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
                         </button>
 
                         <input
@@ -146,8 +157,9 @@ createApp({
                         <button
                             @click="confirmDelete(selected.id)"
                             class="p-1.5 rounded text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
+                            aria-label="Delete this note"
                             title="Delete this note">
-                            <span cv-html.raw="icons.trash"></span>
+                            <span cv-html.raw="icons.trash" aria-hidden="true"></span>
                         </button>
                     </header>
 
@@ -177,22 +189,53 @@ createApp({
             <!-- ── Settings modal ──────────────────────────────────────── -->
             <div cv-if="settingsOpen"
                  @click.self="settingsOpen = false"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="settings-title"
                  class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
                 <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl">
                     <header class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
-                        <h2 class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
-                            <span cv-html.raw="icons.settings"></span>
+                        <h2 id="settings-title" class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
+                            <span cv-html.raw="icons.settings" aria-hidden="true"></span>
                             <span>Settings</span>
                         </h2>
                         <button
                             @click="settingsOpen = false"
                             class="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="Close settings"
                             title="Close">
-                            <span cv-html.raw="icons.x"></span>
+                            <span cv-html.raw="icons.x" aria-hidden="true"></span>
                         </button>
                     </header>
 
                     <div class="px-5 py-4 space-y-4">
+                        <!-- Inline status banner. Shown when an action in
+                             this panel finishes with success or failure;
+                             dismiss with X. Replaces the previous
+                             alert()-based path so failures (write-probe
+                             rejected a folder, set_auto_save couldn't
+                             reach config.json) don't yank focus. -->
+                        <div cv-if="settingsError"
+                             role="alert"
+                             class="px-3 py-2 rounded border border-red-500/40 bg-red-500/10 text-xs text-red-300 flex items-start gap-2">
+                            <span class="flex-1">{{ settingsError }}</span>
+                            <button @click="clearSettingsBanner()"
+                                    class="text-red-300/70 hover:text-red-200 shrink-0"
+                                    aria-label="Dismiss error">
+                                <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                            </button>
+                        </div>
+                        <div cv-if="settingsSuccess"
+                             role="status"
+                             class="px-3 py-2 rounded border border-emerald-500/40 bg-emerald-500/10 text-xs text-emerald-300 flex items-start gap-2">
+                            <span class="flex-1">{{ settingsSuccess }}</span>
+                            <button @click="clearSettingsBanner()"
+                                    class="text-emerald-300/70 hover:text-emerald-200 shrink-0"
+                                    aria-label="Dismiss">
+                                <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                            </button>
+                        </div>
+
                         <div>
                             <label class="block text-xs font-medium text-zinc-400 mb-1.5">Notes folder</label>
                             <div class="flex items-center gap-2 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-xs text-zinc-300 font-mono break-all">
@@ -222,6 +265,33 @@ createApp({
                             </button>
                         </div>
 
+                        <!-- Auto-save toggle. Persisted in config.json on
+                             the Rust side, so the choice survives across
+                             devices that share the notes folder. -->
+                        <div class="pt-3 border-t border-zinc-800">
+                            <label class="flex items-start gap-3 cursor-pointer select-none">
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    @click="toggleAutoSave()"
+                                    :aria-checked="autoSaveEnabled ? 'true' : 'false'"
+                                    :class="autoSaveEnabled ? 'bg-emerald-600' : 'bg-zinc-700'"
+                                    class="relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors">
+                                    <span :class="autoSaveEnabled ? 'translate-x-5' : 'translate-x-1'"
+                                          class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform"></span>
+                                </button>
+                                <div class="flex-1 min-w-0" @click="toggleAutoSave()">
+                                    <div class="text-xs font-medium text-zinc-200">Auto-save while editing</div>
+                                    <p class="text-[11px] text-zinc-600 mt-0.5">
+                                        When on, edits to a saved note persist 600&nbsp;ms after the last
+                                        keystroke. Off keeps notes in <span class="text-blue-400">dirty</span>
+                                        state until you press Ctrl+S explicitly. New notes always require
+                                        an explicit first save regardless of this setting.
+                                    </p>
+                                </div>
+                            </label>
+                        </div>
+
                         <div class="text-[11px] text-zinc-600 pt-2 border-t border-zinc-800">
                             Pick a folder you sync (Dropbox, Syncthing, git) to keep your notes
                             available across devices. Each note is one <code class="text-zinc-400">.md</code> file —
@@ -246,6 +316,16 @@ createApp({
         resizing: false,
 
         settingsOpen: false,
+        // Inline status banner inside the settings modal — replaces the
+        // browser-style `alert()` calls so failures (write-probe rejected
+        // a folder, set_auto_save couldn't reach the config, etc.) stay
+        // contextual instead of yanking focus to a system dialog.
+        settingsError:   '',
+        settingsSuccess: '',
+        // User preference (persisted in Rust config.json). When `false`,
+        // edits never schedule the debounced autosave — every change
+        // requires an explicit Ctrl+S / Save click.
+        autoSaveEnabled: true,
 
         // Static SVG strings for the lucide icons used in the template.
         icons: ICONS,
@@ -309,6 +389,12 @@ createApp({
             if (this.saveStatus === 'unsaved' || this.saveStatus === 'dirty') {
                 if (!confirm('You have unsaved changes. Switch anyway?')) return;
             }
+            // Drop any pending autosave for the note we're leaving so it
+            // can't fire later against `this.selected` after we've
+            // switched. The id-snapshot inside scheduleAutoSave catches it
+            // too, but cancelling explicitly avoids the wasted timer + the
+            // confused state-status flicker.
+            this.cancelAutoSave?.();
             const note = this.notes.find(n => n.id === id);
             if (!note) return;
             this.selectedId = id;
@@ -349,11 +435,22 @@ createApp({
         onEdit() {
             if (this.saveStatus === 'unsaved') return;
             this.saveStatus = 'dirty';
-            this.scheduleAutoSave();
+            // Skip the debounce when the user has disabled auto-save —
+            // they get to keep `dirty` until they hit Ctrl+S explicitly.
+            if (this.autoSaveEnabled) this.scheduleAutoSave();
         },
+        // scheduleAutoSave / cancelAutoSave are wired in onMount() so the
+        // closure-captured timer is per-component and can be canceled from
+        // select() (preventing a stale autosave from firing against the
+        // wrong note after the user switches selection).
         scheduleAutoSave: null,
+        cancelAutoSave: null,
 
         async forceSave() {
+            // The user explicitly asked to save; cancel any pending debounce
+            // so the timeout doesn't fire a redundant second write right
+            // after this completes.
+            this.cancelAutoSave?.();
             await this.persist();
         },
 
@@ -411,7 +508,20 @@ createApp({
             window.addEventListener('mouseup', onUp);
         },
 
+        openSettings() {
+            // Reset the banner so a stale error from a previous session
+            // doesn't reappear.
+            this.clearSettingsBanner();
+            this.settingsOpen = true;
+        },
+
+        clearSettingsBanner() {
+            this.settingsError = '';
+            this.settingsSuccess = '';
+        },
+
         async pickFolder() {
+            this.clearSettingsBanner();
             // Native folder picker via @tauri-apps/plugin-dialog. Returns
             // the selected absolute path, or null when the user cancels.
             const picked = await openDialog({
@@ -425,21 +535,45 @@ createApp({
                 const resolved = await setNotesDir(picked);
                 this.storageDir = resolved;
                 await this.refreshNotes();
-                this.settingsOpen = false;
+                // Stay in the modal so the user can see the new path
+                // confirmed; success message gives the visual feedback.
+                this.settingsSuccess = 'Notes folder updated.';
             } catch (err) {
+                // Common cause: write-probe rejected the folder (read-only
+                // mount, sandbox, etc.). The Rust side returns a clean
+                // "folder is not writable: …" message we surface verbatim.
                 console.error('[notepad] set_notes_dir failed:', err);
-                alert('Could not switch folder: ' + err);
+                this.settingsError = String(err);
             }
         },
 
         async resetFolder() {
+            this.clearSettingsBanner();
             try {
                 const resolved = await resetNotesDir();
                 this.storageDir = resolved;
                 await this.refreshNotes();
+                this.settingsSuccess = 'Reverted to default folder.';
             } catch (err) {
                 console.error('[notepad] reset_notes_dir failed:', err);
-                alert('Could not reset: ' + err);
+                this.settingsError = String(err);
+            }
+        },
+
+        async toggleAutoSave() {
+            const next = !this.autoSaveEnabled;
+            this.autoSaveEnabled = next;       // optimistic
+            this.clearSettingsBanner();
+            try {
+                await setAutoSave(next);
+                // If the user just disabled auto-save, kill any pending
+                // timer that was already mid-flight. The next edit stays
+                // 'dirty' until manual save.
+                if (!next) this.cancelAutoSave?.();
+            } catch (err) {
+                console.error('[notepad] set_auto_save failed:', err);
+                this.autoSaveEnabled = !next;  // revert
+                this.settingsError = 'Could not save preference: ' + err;
             }
         },
 
@@ -488,18 +622,37 @@ createApp({
             if (vm === 'edit' || vm === 'split' || vm === 'preview') this.viewMode = vm;
         } catch {}
 
-        // Load storage dir + notes from Rust.
+        // Load storage dir + notes + auto-save preference from Rust.
         try {
-            this.defaultDir = await defaultNotesDir();
-            this.storageDir = await notesDir();
+            this.defaultDir      = await defaultNotesDir();
+            this.storageDir      = await notesDir();
+            this.autoSaveEnabled = await getAutoSave();
             await this.refreshNotes();
         } catch (err) {
             console.error('[notepad] startup load failed:', err);
         }
 
-        this.scheduleAutoSave = debounce(() => {
-            if (this.saveStatus === 'dirty') this.persist();
-        }, 600);
+        // Cancelable debounced autosave. The closure-captured `timer` lets
+        // both onEdit() (resets) and select() (cancels on note switch) reach
+        // it without it leaking into reactive state. We also snapshot
+        // `selectedId` at schedule time and verify it again when the timer
+        // fires — defense-in-depth against the user switching notes during
+        // the 600 ms window. Without that check, a pending autosave for
+        // note A could run against `this.selected` (now note B) and write
+        // A's title/body into B's file.
+        let autoSaveTimer = null;
+        this.scheduleAutoSave = () => {
+            if (autoSaveTimer) clearTimeout(autoSaveTimer);
+            const scheduledFor = this.selectedId;
+            autoSaveTimer = setTimeout(() => {
+                autoSaveTimer = null;
+                if (this.selectedId !== scheduledFor) return;
+                if (this.saveStatus === 'dirty') this.persist();
+            }, 600);
+        };
+        this.cancelAutoSave = () => {
+            if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+        };
 
         window.addEventListener('keydown', (e) => {
             const meta = e.ctrlKey || e.metaKey;
@@ -509,7 +662,7 @@ createApp({
             else if (k === 's') { e.preventDefault(); this.forceSave(); }
             else if (k === 'p') { e.preventDefault(); this.cycleView(); }
             else if (k === 'b') { e.preventDefault(); this.toggleSidebar(); }
-            else if (k === ',') { e.preventDefault(); this.settingsOpen = !this.settingsOpen; }
+            else if (k === ',') { e.preventDefault(); this.settingsOpen ? (this.settingsOpen = false) : this.openSettings(); }
         });
 
         window.addEventListener('beforeunload', (e) => {

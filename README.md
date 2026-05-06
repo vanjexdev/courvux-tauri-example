@@ -3,7 +3,7 @@
 Notepad demo app showing the [Courvux](https://github.com/vanjexdev/courvux) reactive UI framework running inside [Tauri 2](https://tauri.app/), styled with [Tailwind 4](https://tailwindcss.com/), and shipping with **strict CSP** (`script-src 'self'`, no `unsafe-eval`) thanks to the [`courvux-precompiler`](https://github.com/vanjexdev/courvux-precompiler) Rust → WASM build-time expression compiler.
 
 ![status: demo](https://img.shields.io/badge/status-demo-blue)
-![courvux: 0.7.0](https://img.shields.io/badge/courvux-0.7.1-success)
+![courvux: 0.7.1](https://img.shields.io/badge/courvux-0.7.1-success)
 ![tauri: 2](https://img.shields.io/badge/tauri-2-orange)
 ![license: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
 

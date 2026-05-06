@@ -59,3 +59,9 @@ export const setNotesDir = (path) => invoke('set_notes_dir', { path });
 
 /** Drop the user override; returns the path of the default location. */
 export const resetNotesDir = () => invoke('reset_notes_dir');
+
+/** Whether auto-save (debounced 600 ms after a keystroke) is enabled. */
+export const getAutoSave = () => invoke('get_auto_save');
+
+/** Persist the user's auto-save preference. */
+export const setAutoSave = (enabled) => invoke('set_auto_save', { enabled });
