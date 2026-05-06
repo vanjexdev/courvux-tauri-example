@@ -4,6 +4,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
     listNotes, readNote, writeNote, deleteNote,
     notesDir, defaultNotesDir, setNotesDir, resetNotesDir,
+    getAutoSave, setAutoSave,
 } from './tauri.js';
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
@@ -36,10 +37,10 @@ createApp({
                     <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate">Notepad</h1>
                     <div class="flex items-center gap-1">
                         <button
-                            @click="settingsOpen = true"
+                            @click="openSettings()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
                             aria-label="Open settings"
-                            title="Settings">
+                            title="Settings (Ctrl+,)">
                             <span cv-html.raw="icons.settings" aria-hidden="true"></span>
                         </button>
                         <button
@@ -208,6 +209,33 @@ createApp({
                     </header>
 
                     <div class="px-5 py-4 space-y-4">
+                        <!-- Inline status banner. Shown when an action in
+                             this panel finishes with success or failure;
+                             dismiss with X. Replaces the previous
+                             alert()-based path so failures (write-probe
+                             rejected a folder, set_auto_save couldn't
+                             reach config.json) don't yank focus. -->
+                        <div cv-if="settingsError"
+                             role="alert"
+                             class="px-3 py-2 rounded border border-red-500/40 bg-red-500/10 text-xs text-red-300 flex items-start gap-2">
+                            <span class="flex-1">{{ settingsError }}</span>
+                            <button @click="clearSettingsBanner()"
+                                    class="text-red-300/70 hover:text-red-200 shrink-0"
+                                    aria-label="Dismiss error">
+                                <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                            </button>
+                        </div>
+                        <div cv-if="settingsSuccess"
+                             role="status"
+                             class="px-3 py-2 rounded border border-emerald-500/40 bg-emerald-500/10 text-xs text-emerald-300 flex items-start gap-2">
+                            <span class="flex-1">{{ settingsSuccess }}</span>
+                            <button @click="clearSettingsBanner()"
+                                    class="text-emerald-300/70 hover:text-emerald-200 shrink-0"
+                                    aria-label="Dismiss">
+                                <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                            </button>
+                        </div>
+
                         <div>
                             <label class="block text-xs font-medium text-zinc-400 mb-1.5">Notes folder</label>
                             <div class="flex items-center gap-2 px-3 py-2 bg-zinc-950 border border-zinc-800 rounded text-xs text-zinc-300 font-mono break-all">
@@ -237,6 +265,33 @@ createApp({
                             </button>
                         </div>
 
+                        <!-- Auto-save toggle. Persisted in config.json on
+                             the Rust side, so the choice survives across
+                             devices that share the notes folder. -->
+                        <div class="pt-3 border-t border-zinc-800">
+                            <label class="flex items-start gap-3 cursor-pointer select-none">
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    @click="toggleAutoSave()"
+                                    :aria-checked="autoSaveEnabled ? 'true' : 'false'"
+                                    :class="autoSaveEnabled ? 'bg-emerald-600' : 'bg-zinc-700'"
+                                    class="relative inline-flex shrink-0 h-5 w-9 items-center rounded-full transition-colors">
+                                    <span :class="autoSaveEnabled ? 'translate-x-5' : 'translate-x-1'"
+                                          class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform"></span>
+                                </button>
+                                <div class="flex-1 min-w-0" @click="toggleAutoSave()">
+                                    <div class="text-xs font-medium text-zinc-200">Auto-save while editing</div>
+                                    <p class="text-[11px] text-zinc-600 mt-0.5">
+                                        When on, edits to a saved note persist 600&nbsp;ms after the last
+                                        keystroke. Off keeps notes in <span class="text-blue-400">dirty</span>
+                                        state until you press Ctrl+S explicitly. New notes always require
+                                        an explicit first save regardless of this setting.
+                                    </p>
+                                </div>
+                            </label>
+                        </div>
+
                         <div class="text-[11px] text-zinc-600 pt-2 border-t border-zinc-800">
                             Pick a folder you sync (Dropbox, Syncthing, git) to keep your notes
                             available across devices. Each note is one <code class="text-zinc-400">.md</code> file —
@@ -261,6 +316,16 @@ createApp({
         resizing: false,
 
         settingsOpen: false,
+        // Inline status banner inside the settings modal — replaces the
+        // browser-style `alert()` calls so failures (write-probe rejected
+        // a folder, set_auto_save couldn't reach the config, etc.) stay
+        // contextual instead of yanking focus to a system dialog.
+        settingsError:   '',
+        settingsSuccess: '',
+        // User preference (persisted in Rust config.json). When `false`,
+        // edits never schedule the debounced autosave — every change
+        // requires an explicit Ctrl+S / Save click.
+        autoSaveEnabled: true,
 
         // Static SVG strings for the lucide icons used in the template.
         icons: ICONS,
@@ -370,7 +435,9 @@ createApp({
         onEdit() {
             if (this.saveStatus === 'unsaved') return;
             this.saveStatus = 'dirty';
-            this.scheduleAutoSave();
+            // Skip the debounce when the user has disabled auto-save —
+            // they get to keep `dirty` until they hit Ctrl+S explicitly.
+            if (this.autoSaveEnabled) this.scheduleAutoSave();
         },
         // scheduleAutoSave / cancelAutoSave are wired in onMount() so the
         // closure-captured timer is per-component and can be canceled from
@@ -441,7 +508,20 @@ createApp({
             window.addEventListener('mouseup', onUp);
         },
 
+        openSettings() {
+            // Reset the banner so a stale error from a previous session
+            // doesn't reappear.
+            this.clearSettingsBanner();
+            this.settingsOpen = true;
+        },
+
+        clearSettingsBanner() {
+            this.settingsError = '';
+            this.settingsSuccess = '';
+        },
+
         async pickFolder() {
+            this.clearSettingsBanner();
             // Native folder picker via @tauri-apps/plugin-dialog. Returns
             // the selected absolute path, or null when the user cancels.
             const picked = await openDialog({
@@ -455,21 +535,45 @@ createApp({
                 const resolved = await setNotesDir(picked);
                 this.storageDir = resolved;
                 await this.refreshNotes();
-                this.settingsOpen = false;
+                // Stay in the modal so the user can see the new path
+                // confirmed; success message gives the visual feedback.
+                this.settingsSuccess = 'Notes folder updated.';
             } catch (err) {
+                // Common cause: write-probe rejected the folder (read-only
+                // mount, sandbox, etc.). The Rust side returns a clean
+                // "folder is not writable: …" message we surface verbatim.
                 console.error('[notepad] set_notes_dir failed:', err);
-                alert('Could not switch folder: ' + err);
+                this.settingsError = String(err);
             }
         },
 
         async resetFolder() {
+            this.clearSettingsBanner();
             try {
                 const resolved = await resetNotesDir();
                 this.storageDir = resolved;
                 await this.refreshNotes();
+                this.settingsSuccess = 'Reverted to default folder.';
             } catch (err) {
                 console.error('[notepad] reset_notes_dir failed:', err);
-                alert('Could not reset: ' + err);
+                this.settingsError = String(err);
+            }
+        },
+
+        async toggleAutoSave() {
+            const next = !this.autoSaveEnabled;
+            this.autoSaveEnabled = next;       // optimistic
+            this.clearSettingsBanner();
+            try {
+                await setAutoSave(next);
+                // If the user just disabled auto-save, kill any pending
+                // timer that was already mid-flight. The next edit stays
+                // 'dirty' until manual save.
+                if (!next) this.cancelAutoSave?.();
+            } catch (err) {
+                console.error('[notepad] set_auto_save failed:', err);
+                this.autoSaveEnabled = !next;  // revert
+                this.settingsError = 'Could not save preference: ' + err;
             }
         },
 
@@ -518,10 +622,11 @@ createApp({
             if (vm === 'edit' || vm === 'split' || vm === 'preview') this.viewMode = vm;
         } catch {}
 
-        // Load storage dir + notes from Rust.
+        // Load storage dir + notes + auto-save preference from Rust.
         try {
-            this.defaultDir = await defaultNotesDir();
-            this.storageDir = await notesDir();
+            this.defaultDir      = await defaultNotesDir();
+            this.storageDir      = await notesDir();
+            this.autoSaveEnabled = await getAutoSave();
             await this.refreshNotes();
         } catch (err) {
             console.error('[notepad] startup load failed:', err);
@@ -557,7 +662,7 @@ createApp({
             else if (k === 's') { e.preventDefault(); this.forceSave(); }
             else if (k === 'p') { e.preventDefault(); this.cycleView(); }
             else if (k === 'b') { e.preventDefault(); this.toggleSidebar(); }
-            else if (k === ',') { e.preventDefault(); this.settingsOpen = !this.settingsOpen; }
+            else if (k === ',') { e.preventDefault(); this.settingsOpen ? (this.settingsOpen = false) : this.openSettings(); }
         });
 
         window.addEventListener('beforeunload', (e) => {

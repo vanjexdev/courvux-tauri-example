@@ -50,13 +50,27 @@ struct AppStateInner {
 
 // ── Persisted config ────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AppConfig {
     /// `null` (or missing) means "use the default notes dir". An absolute
     /// path here overrides it.
     #[serde(rename = "notesDir", default)]
     notes_dir: Option<String>,
+    /// User preference for the auto-save behavior. `true` (the default)
+    /// means edits to an already-saved note auto-persist 600 ms after
+    /// the last keystroke; `false` means every change requires an
+    /// explicit Ctrl+S. New notes always start `unsaved` regardless.
+    #[serde(rename = "autoSave", default = "default_auto_save")]
+    auto_save: bool,
 }
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self { notes_dir: None, auto_save: true }
+    }
+}
+
+fn default_auto_save() -> bool { true }
 
 fn load_config(path: &Path) -> AppConfig {
     fs::read_to_string(path)
@@ -237,7 +251,10 @@ fn set_notes_dir(state: State<'_, AppState>, path: String) -> Result<String, Str
         inner.config_path.clone()
     };
 
-    let cfg = AppConfig { notes_dir: Some(new_dir.display().to_string()) };
+    // Read-modify-write so the auto-save preference (and any other future
+    // setting) doesn't get clobbered by a folder change.
+    let mut cfg = load_config(&config_path);
+    cfg.notes_dir = Some(new_dir.display().to_string());
     save_config(&config_path, &cfg)?;
 
     let mut inner = state.inner.lock().unwrap();
@@ -253,11 +270,28 @@ fn reset_notes_dir(state: State<'_, AppState>) -> Result<String, String> {
         let inner = state.inner.lock().unwrap();
         (inner.config_path.clone(), inner.default_notes_dir.clone())
     };
-    save_config(&config_path, &AppConfig::default())?;
+    // Preserve other prefs (e.g. autoSave) when only the folder is reset.
+    let mut cfg = load_config(&config_path);
+    cfg.notes_dir = None;
+    save_config(&config_path, &cfg)?;
     fs::create_dir_all(&default_dir).map_err(|e| format!("create dir: {}", e))?;
     let mut inner = state.inner.lock().unwrap();
     inner.notes_dir = default_dir.clone();
     Ok(default_dir.display().to_string())
+}
+
+#[tauri::command]
+fn get_auto_save(state: State<'_, AppState>) -> bool {
+    let config_path = state.inner.lock().unwrap().config_path.clone();
+    load_config(&config_path).auto_save
+}
+
+#[tauri::command]
+fn set_auto_save(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let config_path = state.inner.lock().unwrap().config_path.clone();
+    let mut cfg = load_config(&config_path);
+    cfg.auto_save = enabled;
+    save_config(&config_path, &cfg)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -406,6 +440,8 @@ pub fn run() {
             get_default_notes_dir,
             set_notes_dir,
             reset_notes_dir,
+            get_auto_save,
+            set_auto_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
