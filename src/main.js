@@ -12,6 +12,10 @@ import { ICONS } from './icons.js';
 // serves it from the same origin so the strict CSP `img-src 'self' data:`
 // keeps holding.
 import logoUrl from './assets/logo.png';
+// Reading the version straight from package.json keeps the About dialog
+// in sync with whatever `pnpm version` last bumped — no second source
+// of truth to update on every release.
+import { version as APP_VERSION } from '../package.json';
 
 // Note: we used to lean on a generic `debounce()` helper for the auto-save
 // schedule, but that hides the timer from the caller. The auto-save needs
@@ -43,6 +47,13 @@ createApp({
                         <span>Notepad</span>
                     </h1>
                     <div class="flex items-center gap-1">
+                        <button
+                            @click="aboutOpen = true"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="About this app"
+                            title="About (Ctrl+I)">
+                            <span cv-html.raw="icons.info" aria-hidden="true"></span>
+                        </button>
                         <button
                             @click="openSettings()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
@@ -335,6 +346,55 @@ createApp({
                     </div>
                 </div>
             </div>
+
+            <!-- ── About modal ─────────────────────────────────────────── -->
+            <div cv-if="aboutOpen"
+                 @click.self="aboutOpen = false"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="about-title"
+                 class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl">
+                    <header class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
+                        <h2 id="about-title" class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
+                            <span cv-html.raw="icons.info" aria-hidden="true"></span>
+                            <span>About</span>
+                        </h2>
+                        <button
+                            @click="aboutOpen = false"
+                            class="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="Close about"
+                            title="Close">
+                            <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                        </button>
+                    </header>
+
+                    <div class="px-5 py-6 text-center">
+                        <img :src="logoUrl" alt="Courvux Notepad" width="96" height="96"
+                             class="mx-auto mb-4" />
+                        <h3 class="text-base font-semibold text-zinc-100">Courvux Notepad</h3>
+                        <p class="text-xs text-zinc-500 mt-1">Version {{ appVersion }}</p>
+                        <p class="text-xs text-zinc-400 mt-4 leading-relaxed">
+                            Notepad demo built with the
+                            <a href="https://github.com/vanjexdev/courvux"
+                               target="_blank" rel="noopener"
+                               class="text-emerald-400 hover:text-emerald-300">Courvux</a>
+                            reactive UI framework, running inside
+                            <a href="https://tauri.app/" target="_blank" rel="noopener"
+                               class="text-emerald-400 hover:text-emerald-300">Tauri 2</a>
+                            with strict CSP and no
+                            <code class="text-zinc-500">unsafe-eval</code>.
+                        </p>
+                    </div>
+
+                    <footer class="px-5 py-3 border-t border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
+                        <span>MIT · © {{ appYear }} Vanjex</span>
+                        <a href="https://github.com/vanjexdev/courvux-tauri-example"
+                           target="_blank" rel="noopener"
+                           class="text-emerald-400 hover:text-emerald-300">View source ↗</a>
+                    </footer>
+                </div>
+            </div>
         </div>
     `,
     data: {
@@ -354,6 +414,13 @@ createApp({
         searchQuery: '',
 
         settingsOpen: false,
+        aboutOpen: false,
+        // Inlined at build time from package.json so the About dialog
+        // can't drift from the actual release version. The year is stamped
+        // when the app starts — reasonable for a demo; fancier apps would
+        // bake it in at build via a Vite define instead of recomputing.
+        appVersion: APP_VERSION,
+        appYear: new Date().getFullYear(),
         // Inline status banner inside the settings modal — replaces the
         // browser-style `alert()` calls so failures (write-probe rejected
         // a folder, set_auto_save couldn't reach the config, etc.) stay
@@ -713,6 +780,12 @@ createApp({
         };
 
         window.addEventListener('keydown', (e) => {
+            // Esc closes whichever modal is open. Cheap escape hatch when
+            // the user reaches for the X with the keyboard.
+            if (e.key === 'Escape') {
+                if (this.settingsOpen) { this.settingsOpen = false; return; }
+                if (this.aboutOpen)    { this.aboutOpen = false;    return; }
+            }
             const meta = e.ctrlKey || e.metaKey;
             if (!meta) return;
             const k = e.key.toLowerCase();
@@ -721,6 +794,7 @@ createApp({
             else if (k === 'p') { e.preventDefault(); this.cycleView(); }
             else if (k === 'b') { e.preventDefault(); this.toggleSidebar(); }
             else if (k === ',') { e.preventDefault(); this.settingsOpen ? (this.settingsOpen = false) : this.openSettings(); }
+            else if (k === 'i') { e.preventDefault(); this.aboutOpen = !this.aboutOpen; }
             else if (k === 'f') {
                 // Focus the sidebar search input. Open the sidebar if it's
                 // collapsed so the input actually exists in the DOM first.
