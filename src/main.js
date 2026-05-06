@@ -1,11 +1,13 @@
 import { createApp } from 'courvux';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { listen } from '@tauri-apps/api/event';
 
 import {
     listNotes, readNote, writeNote, deleteNote,
     notesDir, defaultNotesDir, setNotesDir, resetNotesDir,
     getAutoSave, setAutoSave,
+    importMd, exportMd,
 } from './tauri.js';
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
@@ -721,6 +723,83 @@ createApp({
             }
         },
 
+        // ── File-menu handlers ────────────────────────────────────────────
+        // The native menu (built in src-tauri/src/lib.rs `setup`) emits
+        // `menu` events with the item id; we route each one to the matching
+        // handler here. Edit-menu items (cut/copy/paste/undo/redo/select_all)
+        // are predefined so they fire native webview commands without ever
+        // bouncing through here.
+
+        async openMd() {
+            const picked = await openDialog({
+                multiple: false,
+                filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+                title: 'Open Markdown file',
+            });
+            if (!picked) return;
+            try {
+                const summary = await importMd(picked);
+                // Insert into the sidebar list. Body stays unloaded — select()
+                // pulls it from disk on demand to keep the import path fast
+                // for big files.
+                this.notes.push({
+                    id: summary.id,
+                    title: summary.title,
+                    body: '',
+                    createdAt: 0,
+                    updatedAt: summary.updatedAt,
+                    _loaded: false,
+                });
+                await this.select(summary.id);
+            } catch (err) {
+                console.error('[notepad] import failed:', err);
+                alert('Open failed: ' + err);
+            }
+        },
+
+        async saveAs() {
+            if (!this.selected) return;
+            // Always make sure the in-memory edits are flushed to disk first
+            // — `Save As` should export *what the user is currently looking
+            // at*, including unsaved changes.
+            if (this.saveStatus === 'unsaved' || this.saveStatus === 'dirty') {
+                await this.forceSave();
+            }
+            const defaultName = (this.selected.title.trim() || 'Untitled') + '.md';
+            const dest = await saveDialog({
+                defaultPath: defaultName,
+                filters: [{ name: 'Markdown', extensions: ['md'] }],
+                title: 'Save note as Markdown',
+            });
+            if (!dest) return;
+            try {
+                await exportMd(dest, this.selected.title, this.selected.body);
+            } catch (err) {
+                console.error('[notepad] export failed:', err);
+                alert('Save As failed: ' + err);
+            }
+        },
+
+        async exportPdf() {
+            if (!this.selected) return;
+            // Force the rendered preview into the DOM — `window.print()` only
+            // captures what's currently on screen. We snapshot the previous
+            // mode and restore it once the print dialog is dismissed.
+            const prev = this.viewMode;
+            this.viewMode = 'preview';
+            document.body.classList.add('printing');
+            // Two ticks: one for the cv-show toggle to drop the textarea out,
+            // one for layout to settle before the browser captures.
+            await this.$nextTick();
+            await this.$nextTick();
+            try {
+                window.print();
+            } finally {
+                document.body.classList.remove('printing');
+                this.viewMode = prev;
+            }
+        },
+
         // Tauri webview sandboxes `<a target="_blank">` (no browser context),
         // so the About-dialog links go through `tauri-plugin-opener` which
         // hands the URL to the OS default browser. The capability scope in
@@ -793,6 +872,20 @@ createApp({
         this.cancelAutoSave = () => {
             if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
         };
+
+        // Listen for native-menu events emitted from src-tauri/src/lib.rs.
+        // The handler returns an unlisten function — we don't store it
+        // because the listener should live for the entire app session
+        // (window close tears it down).
+        listen('menu', async (e) => {
+            switch (e.payload) {
+                case 'new':        this.newNote();        break;
+                case 'open':       await this.openMd();   break;
+                case 'save':       await this.forceSave(); break;
+                case 'save_as':    await this.saveAs();    break;
+                case 'export_pdf': await this.exportPdf(); break;
+            }
+        }).catch(err => console.error('[notepad] menu listener failed:', err));
 
         window.addEventListener('keydown', (e) => {
             // Esc closes whichever modal is open. Cheap escape hatch when
