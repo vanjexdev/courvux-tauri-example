@@ -37,21 +37,25 @@ const escapeHtml = (s) => s
 // Wire syntax highlighting into marked's renderer. Falls back to plain
 // HTML-escaped <pre><code> when the language is unknown so unsupported
 // fences still render safely.
+//
+// Note: marked v5+ changed renderer hooks from positional args
+// (code, infoString) to a single token object (`{ text, lang, ... }`).
+// Passing the old signature here meant Prism received a token object
+// instead of the source string and threw on every fenced block, which
+// blanked the preview.
 marked.use({
     renderer: {
-        code(code, infoString) {
-            const lang = (infoString ?? '').trim().split(/\s+/)[0];
-            if (lang && Prism.languages[lang]) {
-                const html = Prism.highlight(code, Prism.languages[lang], lang);
-                return `<pre><code class="language-${escapeHtml(lang)}">${html}</code></pre>`;
+        code({ text, lang }) {
+            const langKey = (lang ?? '').trim().split(/\s+/)[0];
+            if (langKey && Prism.languages[langKey]) {
+                const html = Prism.highlight(text, Prism.languages[langKey], langKey);
+                return `<pre><code class="language-${escapeHtml(langKey)}">${html}</code></pre>`;
             }
-            return `<pre><code>${escapeHtml(code)}</code></pre>`;
+            return `<pre><code>${escapeHtml(text)}</code></pre>`;
         },
     },
     gfm: true,
     breaks: true,
-    headerIds: false,
-    mangle: false,
 });
 
 /**
