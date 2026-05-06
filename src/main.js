@@ -9,9 +9,13 @@ import {
     getAutoSave, setAutoSave,
     importMd, exportMd, takePendingOpenFiles,
     openProjectFolder, listProjectTree, readProjectFile, writeProjectFile,
-    createProjectFile, createProjectDir, getRecentProjects,
+    createProjectFile, createProjectDir, writeBinaryFile, getRecentProjects,
 } from './tauri.js';
 import { convertFileSrc } from '@tauri-apps/api/core';
+// `pdf-export.js` is dynamically imported inside `exportProjectPdf` so
+// jsPDF (~600 KB minified, plus html2canvas pulled by its bundle even
+// though we never call it) ships in a separate Vite chunk that's only
+// fetched when the user actually triggers a PDF export.
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
 // Vite bundles the asset and gives us a hashed URL; the bundled webview
@@ -39,16 +43,6 @@ const LAST_PROJECT_KEY  = 'courvux-notepad:last-project';  // path to reopen on 
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 480;
-
-// Plain HTML escape for the section titles we inject into the project
-// PDF bundle. The user-controlled value is the file path, but defense
-// against `<` / `&` injection is cheap insurance even though DOMPurify
-// would catch anything dangerous afterwards.
-const escapeHtml = (s) => String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 // Resolve `.` and `..` segments without touching the filesystem. Used
 // by the PDF bundle's link resolver so `[X](../sub/other.md)` from a
@@ -1320,20 +1314,19 @@ createApp({
             }
         },
 
-        // Bundle every `.md` in the project into a single printable
-        // surface and trigger window.print(). Each section gets the
-        // file's path-from-root as its <h1>, and `break-before: page`
-        // separates them so each file lands on its own page in the PDF.
-        // Image sources resolve relative to each file's parent dir,
-        // not the project root, matching what marked sees inside the
-        // app's normal preview.
+        // Bundle every `.md` in the project into a single PDF generated
+        // with jsPDF. We render each file's markdown to HTML, hand the
+        // HTML to a hand-written DOM walker in `pdf-export.js`, and
+        // emit real PDF link annotations for both URLs and intra-doc
+        // jumps (`[other](other.md)` → click jumps to that section's
+        // first page). The webkit print pipeline can't preserve link
+        // annotations on Linux, which is why we don't use window.print().
         async exportProjectPdf() {
             if (!this.project) {
                 alert('Open a project first.');
                 return;
             }
-            // Flush any pending edits in the currently-open file so the
-            // bundled PDF reflects the on-disk state.
+            // Flush any pending edits so the bundled PDF reflects disk.
             if (this.projectSaveStatus === 'unsaved' || this.projectSaveStatus === 'dirty') {
                 await this.forceSave();
             }
@@ -1353,19 +1346,20 @@ createApp({
                 return;
             }
 
-            const sep = this.project.path.includes('\\') ? '\\' : '/';
             const rootAbs = this.project.path.replace(/[\/\\]+$/, '');
 
-            // Build absolute-path → section-id map up-front so the link
-            // resolver can rewrite cross-doc references like
-            // `[other](other.md)` into intra-PDF jumps `#pdf-3`. Without
-            // this, those hrefs land in the printed PDF as relative
-            // strings and the reader can't follow them.
-            const fileToAnchor = new Map();
-            mdFiles.forEach((node, i) => {
-                fileToAnchor.set(node.path.toLowerCase(), `pdf-${i}`);
-            });
+            // Absolute-path → section-index map. The link resolver hands
+            // back `#pdf-N` strings; the PDF builder reads that anchor
+            // and emits a PageJump annotation pointing at section N's
+            // first page (resolved at finalize, since we don't know the
+            // page numbers until the layout completes).
+            const fileToIndex = new Map();
+            mdFiles.forEach((node, i) => fileToIndex.set(node.path.toLowerCase(), i));
 
+            // Render each section's HTML up front so the PDF builder
+            // gets a clean payload to walk. Image hrefs resolve against
+            // the file's own directory (markdown convention), not the
+            // project root.
             const sections = [];
             for (let i = 0; i < mdFiles.length; i++) {
                 const node = mdFiles[i];
@@ -1376,9 +1370,6 @@ createApp({
                     console.warn('[notepad] export bundle skip unreadable:', node.path, err);
                     continue;
                 }
-                // baseDir is the parent dir of this specific .md file —
-                // markdown image links are relative to the file, not the
-                // project root.
                 const lastSep = Math.max(node.path.lastIndexOf('/'), node.path.lastIndexOf('\\'));
                 const baseDir = lastSep > 0 ? node.path.slice(0, lastSep) : rootAbs;
                 const relPath = node.path.startsWith(rootAbs)
@@ -1387,20 +1378,11 @@ createApp({
 
                 const linkResolver = (href, refBaseDir) => {
                     if (!href) return null;
-                    // Leave URL-scheme + protocol-relative + in-page
-                    // anchor links alone — WebKit's print pipeline
-                    // already wires `https://...` as PDF link
-                    // annotations, and `#heading` is a local anchor
-                    // we don't manage.
                     if (/^[a-z][a-z0-9+.\-]*:/i.test(href)
                         || href.startsWith('//')
                         || href.startsWith('#')) {
                         return null;
                     }
-                    // Resolve the href against this file's directory,
-                    // then look it up in the project's section map. If
-                    // the link points to a `.md` we're including in the
-                    // bundle, redirect it to that section's anchor.
                     let candidate = href;
                     if (!candidate.startsWith('/') && !/^[A-Za-z]:[\\\/]/.test(candidate)) {
                         const dirSep = refBaseDir.includes('\\') ? '\\' : '/';
@@ -1408,30 +1390,36 @@ createApp({
                         candidate = `${trimmed}${dirSep}${href.replace(/^[\/\\]+/, '')}`;
                     }
                     const normalized = normalizePath(candidate);
-                    const anchor = fileToAnchor.get(normalized.toLowerCase());
-                    return anchor ? `#${anchor}` : null;
+                    const target = fileToIndex.get(normalized.toLowerCase());
+                    return target != null ? `#pdf-${target}` : null;
                 };
 
                 const html = renderMarkdown(content, baseDir, linkResolver);
-                sections.push(`<section id="pdf-${i}" class="markdown-body"><h1 class="pdf-section-title">${escapeHtml(relPath)}</h1>${html}</section>`);
+                sections.push({ index: i, title: relPath, html });
             }
 
-            // Inject a sibling container outside #app so our print CSS
-            // can isolate it cleanly without fighting the editor's
-            // flexbox layout. Removed in the finally block below.
-            const container = document.createElement('div');
-            container.id = 'pdf-bundle';
-            container.innerHTML = sections.join('');
-            document.body.appendChild(container);
-            document.body.classList.add('printing-bundle');
+            const dest = await saveDialog({
+                defaultPath: (this.project.name || 'project') + '.pdf',
+                filters: [{ name: 'PDF', extensions: ['pdf'] }],
+                title: 'Export project as PDF',
+            });
+            if (!dest) return;
 
-            await this.$nextTick();
-            await this.$nextTick();
+            let base64;
             try {
-                window.print();
-            } finally {
-                document.body.classList.remove('printing-bundle');
-                container.remove();
+                const { buildProjectPdf } = await import('./pdf-export.js');
+                base64 = await buildProjectPdf({ sections });
+            } catch (err) {
+                console.error('[notepad] pdf build failed:', err);
+                alert('PDF generation failed: ' + err);
+                return;
+            }
+
+            try {
+                await writeBinaryFile(dest, base64);
+            } catch (err) {
+                console.error('[notepad] pdf write failed:', err);
+                alert('Save failed: ' + err);
             }
         },
 

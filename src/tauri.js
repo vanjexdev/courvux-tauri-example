@@ -136,6 +136,12 @@ export const createProjectFile = (path, content) =>
 export const createProjectDir = (path) =>
     invoke('create_project_dir', { path });
 
+/** Decode `base64` and write the bytes to `path`. Used by the project
+ *  PDF export — jsPDF generates the file as base64 in the webview and
+ *  we write it to disk here so we don't need to ship plugin-fs. */
+export const writeBinaryFile = (path, base64) =>
+    invoke('write_binary_file', { path, base64 });
+
 /** Most-recently-opened project folders, newest first. Entries whose
  *  folders no longer exist are pruned lazily by the Rust side. */
 export const getRecentProjects = () => invoke('get_recent_projects');

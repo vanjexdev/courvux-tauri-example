@@ -547,6 +547,23 @@ fn read_project_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path, e))
 }
 
+/// Write a base64-encoded binary blob to disk. Used by the project
+/// PDF export pipeline — jsPDF generates a base64 PDF string in the
+/// webview and we hand that off to Rust here for the actual file
+/// write so we don't have to ship Tauri's plugin-fs alongside it.
+#[tauri::command]
+fn write_binary_file(path: String, base64: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.as_bytes())
+        .map_err(|e| format!("base64 decode: {}", e))?;
+    let p = PathBuf::from(&path);
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
+    }
+    fs::write(&p, bytes).map_err(|e| format!("write {}: {}", path, e))
+}
+
 /// `mkdir -p` for project folders. Idempotent on existing directories
 /// (so creating `a/b/c` when `a/b` exists is fine), but rejects when
 /// the target path already exists as a file.
@@ -992,6 +1009,7 @@ pub fn run() {
             write_project_file,
             create_project_file,
             create_project_dir,
+            write_binary_file,
             get_recent_projects,
         ])
         .run(tauri::generate_context!())

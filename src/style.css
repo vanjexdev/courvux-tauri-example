@@ -102,11 +102,6 @@
  * outside the dark UI. Only applies during the actual print pipeline so
  * the screen view stays untouched.
  */
-/* The bundle container is sibling-to-#app, hidden by default; only the
-   print pipeline (`body.printing-bundle`) reveals it. Stays out of the
-   live editor so the regular UI keeps its flexbox sizing. */
-#pdf-bundle { display: none; }
-
 @media print {
     @page { margin: 1.8cm; }
 
@@ -114,8 +109,6 @@
         background: #fff !important;
         color: #111 !important;
     }
-
-    /* ── Single-file print (Export PDF) ──────────────────────────── */
 
     /* Hide every chrome surface. */
     body.printing aside,
@@ -176,63 +169,5 @@
     body.printing .markdown-body td,
     body.printing .markdown-body hr {
         border-color: #d4d4d8 !important;
-    }
-
-    /* ── Project bundle print (Export Project as PDF) ────────────── */
-
-    /* When bundling a whole project, hide #app outright and show the
-       sibling #pdf-bundle container in its place. */
-    body.printing-bundle #app { display: none !important; }
-    body.printing-bundle #pdf-bundle {
-        display: block !important;
-        position: static !important;
-        width: 100% !important;
-        background: #fff !important;
-        color: #111 !important;
-    }
-    body.printing-bundle #pdf-bundle .markdown-body {
-        background: #fff !important;
-        color: #111 !important;
-        font-size: 12pt;
-        line-height: 1.55;
-        padding: 0 !important;
-    }
-    body.printing-bundle #pdf-bundle .markdown-body h1,
-    body.printing-bundle #pdf-bundle .markdown-body h2,
-    body.printing-bundle #pdf-bundle .markdown-body h3,
-    body.printing-bundle #pdf-bundle .markdown-body h4,
-    body.printing-bundle #pdf-bundle .markdown-body h5,
-    body.printing-bundle #pdf-bundle .markdown-body h6,
-    body.printing-bundle #pdf-bundle .markdown-body strong { color: #000 !important; }
-    body.printing-bundle #pdf-bundle .markdown-body a { color: #1d4ed8 !important; }
-    body.printing-bundle #pdf-bundle .markdown-body code,
-    body.printing-bundle #pdf-bundle .markdown-body pre {
-        background: #f4f4f5 !important;
-        color: #111 !important;
-        border-color: #d4d4d8 !important;
-    }
-    body.printing-bundle #pdf-bundle .markdown-body pre code { color: #111 !important; }
-    body.printing-bundle #pdf-bundle .markdown-body blockquote {
-        border-left-color: #a1a1aa !important;
-        background: #f9fafb !important;
-        color: #374151 !important;
-    }
-
-    /* Each section starts on its own page. The first section keeps
-       its natural position (no leading blank page). */
-    body.printing-bundle #pdf-bundle section + section {
-        break-before: page;
-        page-break-before: always;  /* legacy alias */
-    }
-
-    /* File path heading at the top of each section — slightly looser
-       than a regular H1 so it reads as a divider, not body content. */
-    body.printing-bundle #pdf-bundle .pdf-section-title {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 13pt !important;
-        margin: 0 0 0.6em !important;
-        padding: 0 0 0.3em !important;
-        border-bottom: 2px solid #1d4ed8 !important;
-        color: #1d4ed8 !important;
     }
 }
