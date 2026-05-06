@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/* Same font as the Courvux framework site so the two pages feel like
+   a single product family. JetBrains Mono used for *both* sans and
+   mono so headings + body + code share the same typographic rhythm. */
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-400-italic.css";
+
+@theme {
+    --font-sans: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Hide the un-rendered template flash before Courvux mounts. */
+[cv-cloak] { display: none !important; }
+
+/* Base reset + brand-friendly defaults. Most surface styling stays in
+   utility classes; this file only owns concerns Tailwind doesn't cover
+   (font wiring, focus ring color, scroll polish). */
+html { scroll-behavior: smooth; }
+
+@media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+body {
+    font-family: var(--font-sans);
+    font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+/* Visible focus ring for keyboard users — uses the brand emerald so
+   it reads as intentional rather than a default browser outline. */
+:focus-visible {
+    outline: 2px solid rgb(16 185 129);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* Native scroll polish (matches the app for visual consistency). */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgb(63 63 70); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(82 82 91); }
+
+/* Subtle gradient backdrop behind the hero. Pure CSS, no image, so it
+   stays sharp at any DPR and adds zero bytes to the bundle. */
+.hero-glow {
+    background:
+        radial-gradient(ellipse at 20% 0%, rgba(16, 185, 129, 0.12), transparent 60%),
+        radial-gradient(ellipse at 80% 30%, rgba(20, 184, 166, 0.08), transparent 50%);
+}
+
+/* Mockup chrome — gives the in-page Notepad recreation a window-frame
+   look without an actual screenshot. */
+.mockup-window {
+    box-shadow:
+        0 0 0 1px rgb(39 39 42),
+        0 25px 50px -12px rgba(0, 0, 0, 0.7),
+        0 0 80px -20px rgba(16, 185, 129, 0.15);
+}
