@@ -2,11 +2,17 @@
 // settings store (`config.json`) that persists the user-chosen notes
 // folder so the next launch picks up where they left off.
 //
-// Storage model (v0.3.0+):
+// Storage model (v0.4.1+):
 //
-//   <notes_dir>/<id>.md            — one Markdown file per note
+//   <notes_dir>/<id>-<slug>.md     — one Markdown file per note
 //   <app-data>/courvux-tauri-notepad/config.json
 //                                  — { "notesDir": "/path/the/user/picked" | null }
+//
+// The `<id>` prefix preserves the existing id-based addressing (read /
+// delete know which file to touch without scanning the whole directory)
+// while `<slug>` keeps the file human-recognizable when the user opens
+// the notes folder in their own file manager. Pre-0.4.1 files used
+// `<id>.md` and are auto-migrated to the new shape on first save.
 //
 // `notes_dir` defaults to `<app-data>/courvux-tauri-notepad/notes/` and can
 // be overridden at runtime via the `set_notes_dir` command (which the UI
@@ -133,7 +139,7 @@ fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteSummary>, String> {
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
             continue;
         }
-        let id = match path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) {
+        let id = match path.file_stem().and_then(|s| s.to_str()).and_then(parse_id_from_stem) {
             Some(id) => id,
             None => continue,
         };
@@ -159,7 +165,9 @@ fn list_notes(state: State<'_, AppState>) -> Result<Vec<NoteSummary>, String> {
 
 #[tauri::command]
 fn read_note(state: State<'_, AppState>, id: u64) -> Result<Note, String> {
-    let path = state.inner.lock().unwrap().notes_dir.join(format!("{}.md", id));
+    let dir = state.inner.lock().unwrap().notes_dir.clone();
+    let path = find_note_path(&dir, id)
+        .ok_or_else(|| format!("note {} not found in {}", id, dir.display()))?;
     let raw = fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let (front, body) = split_frontmatter(&raw);
     let fm: Frontmatter = serde_yaml::from_str(&front).map_err(|e| format!("frontmatter parse: {}", e))?;
@@ -182,27 +190,43 @@ fn write_note(
 ) -> Result<u64, String> {
     let updated_at = now_ms();
     let dir = state.inner.lock().unwrap().notes_dir.clone();
-    let path = dir.join(format!("{}.md", id));
     fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {}", e))?;
+
+    // The desired path reflects the *current* title, so renaming a note
+    // moves the underlying file. Locate the existing file (if any) so we
+    // can clean it up after the new file is in place — covers both the
+    // legacy `<id>.md` shape and stale `<id>-<old_slug>.md` variants.
+    let new_path = dir.join(format!("{}-{}.md", id, slugify(&title)));
+    let old_path = find_note_path(&dir, id);
 
     let fm = Frontmatter { title, created_at, updated_at };
     let yaml = serde_yaml::to_string(&fm).map_err(|e| format!("yaml: {}", e))?;
     let payload = format!("---\n{}---\n\n{}", yaml, body);
 
-    let tmp_path = path.with_extension("md.tmp");
+    let tmp_path = new_path.with_extension("md.tmp");
     {
         let mut f = fs::File::create(&tmp_path).map_err(|e| format!("create tmp: {}", e))?;
         f.write_all(payload.as_bytes()).map_err(|e| format!("write tmp: {}", e))?;
         f.sync_all().map_err(|e| format!("fsync: {}", e))?;
     }
-    fs::rename(&tmp_path, &path).map_err(|e| format!("rename: {}", e))?;
+    fs::rename(&tmp_path, &new_path).map_err(|e| format!("rename: {}", e))?;
+
+    // Drop the old file if the title changed (or if we just migrated from
+    // the legacy `<id>.md` layout to `<id>-<slug>.md`). Same path = no-op.
+    if let Some(old) = old_path {
+        if old != new_path && old.exists() {
+            if let Err(err) = fs::remove_file(&old) {
+                eprintln!("[notepad] could not remove stale note file {}: {}", old.display(), err);
+            }
+        }
+    }
     Ok(updated_at)
 }
 
 #[tauri::command]
 fn delete_note(state: State<'_, AppState>, id: u64) -> Result<(), String> {
-    let path = state.inner.lock().unwrap().notes_dir.join(format!("{}.md", id));
-    if path.exists() {
+    let dir = state.inner.lock().unwrap().notes_dir.clone();
+    if let Some(path) = find_note_path(&dir, id) {
         fs::remove_file(&path).map_err(|e| format!("remove {}: {}", path.display(), e))?;
     }
     Ok(())
@@ -304,6 +328,58 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// ASCII-only slug from a note title. Lowercases letters/digits, replaces
+/// every other char with a single `-`, collapses runs, trims, and caps at
+/// 50 chars so the resulting filename stays well under the 255-byte limit
+/// most filesystems impose. Empty result → `untitled`.
+fn slugify(title: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = true;
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            for lc in c.to_lowercase() { out.push(lc); }
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    while out.ends_with('-') { out.pop(); }
+    if out.len() > 50 {
+        out.truncate(50);
+        while out.ends_with('-') { out.pop(); }
+    }
+    if out.is_empty() { return "untitled".into(); }
+    out
+}
+
+/// Pull the numeric id out of a note's filename stem. Accepts both the
+/// legacy `<id>` shape (whole stem is the id) and the new `<id>-<slug>`
+/// shape (id is everything before the first `-`).
+fn parse_id_from_stem(stem: &str) -> Option<u64> {
+    if let Ok(id) = stem.parse::<u64>() { return Some(id); }
+    stem.split_once('-').and_then(|(prefix, _)| prefix.parse::<u64>().ok())
+}
+
+/// Locate the on-disk file for a given note id. Returns `Some(path)` for
+/// either layout — legacy `<id>.md` or new `<id>-<slug>.md` — and falls
+/// back to scanning the directory if the legacy filename is missing.
+fn find_note_path(dir: &Path, id: u64) -> Option<PathBuf> {
+    let legacy = dir.join(format!("{}.md", id));
+    if legacy.exists() { return Some(legacy); }
+    let prefix = format!("{}-", id);
+    fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") { return None; }
+        let stem = path.file_stem().and_then(|s| s.to_str())?;
+        if stem.starts_with(&prefix) && stem[prefix.len()..].chars().next().is_some() {
+            Some(path)
+        } else {
+            None
+        }
+    })
+}
+
 fn split_frontmatter(raw: &str) -> (String, &str) {
     let trimmed_start = raw.strip_prefix("---\n").or_else(|| raw.strip_prefix("---\r\n"));
     let after_open = match trimmed_start {
@@ -399,6 +475,10 @@ pub fn run() {
         // across launches in `<app-data>/window-state.json`. Uses defaults
         // (all flags set, restore on startup) — no extra config needed.
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Opens https URLs in the user's default browser. Tauri webview
+        // sandboxes `<a target="_blank">` (no browser context), so the
+        // About dialog calls `opener:open_url` via the plugin instead.
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app
                 .path()
