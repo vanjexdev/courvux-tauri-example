@@ -9,7 +9,7 @@ import {
     getAutoSave, setAutoSave,
     importMd, exportMd, takePendingOpenFiles,
     openProjectFolder, listProjectTree, readProjectFile, writeProjectFile,
-    getRecentProjects,
+    createProjectFile, getRecentProjects,
 } from './tauri.js';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { renderMarkdown } from './markdown.js';
@@ -85,6 +85,14 @@ createApp({
                             @click="newNote()"
                             class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1"
                             title="New note (Ctrl+N)">
+                            <span cv-html.raw="icons.plus"></span>
+                            <span>New</span>
+                        </button>
+                        <button
+                            cv-if="mode === 'project'"
+                            @click="newProjectFile()"
+                            class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1"
+                            title="New file in project (Ctrl+N)">
                             <span cv-html.raw="icons.plus"></span>
                             <span>New</span>
                         </button>
@@ -1046,6 +1054,49 @@ createApp({
             }
         },
 
+        // Create a new empty .md file at the project root. The browser
+        // `prompt()` is sufficient here — it's modal, OS-styled in Tauri,
+        // and avoids dragging in a third dialog component for a one-off.
+        async newProjectFile() {
+            if (!this.project) return;
+            const raw = window.prompt('New file name:', 'untitled.md');
+            if (!raw) return;
+            // Strip the path separators / shell metachars Linux + Windows
+            // both refuse, then default the extension to `.md` so the user
+            // doesn't have to type it.
+            let name = raw.trim().replace(/[\/\\:*?"<>|]/g, '');
+            if (!name) return;
+            if (!/\.[a-z0-9]+$/i.test(name)) name += '.md';
+
+            const sep = this.project.path.includes('\\') ? '\\' : '/';
+            const fullPath = this.project.path.replace(/[\/\\]+$/, '') + sep + name;
+
+            try {
+                await createProjectFile(fullPath, '');
+            } catch (err) {
+                console.error('[notepad] create file failed:', err);
+                alert('Could not create file: ' + err);
+                return;
+            }
+            await this.refreshTree();
+            // Open the freshly-created file in the editor so the user can
+            // start typing immediately. We reuse the tree-click path so
+            // the dirty-prompt + autosave bookkeeping stays in one place.
+            const node = this.findNodeByPath(this.project.tree, fullPath);
+            if (node) await this.onTreeClick({ ...node, isDir: false });
+        },
+
+        findNodeByPath(node, path) {
+            if (!node) return null;
+            if (node.path === path) return node;
+            if (!node.children) return null;
+            for (const c of node.children) {
+                const found = this.findNodeByPath(c, path);
+                if (found) return found;
+            }
+            return null;
+        },
+
         async onTreeClick(node) {
             if (node.isDir) {
                 // Toggle expand. Use object spread to keep the reactivity
@@ -1302,7 +1353,10 @@ createApp({
         // (window close tears it down).
         listen('menu', async (e) => {
             switch (e.payload) {
-                case 'new':           this.newNote();             break;
+                case 'new':
+                    if (this.mode === 'project') await this.newProjectFile();
+                    else this.newNote();
+                    break;
                 case 'open':          await this.openMd();        break;
                 case 'open_folder':   await this.openFolder();    break;
                 case 'close_project': await this.closeProject();  break;
@@ -1323,7 +1377,11 @@ createApp({
             const meta = e.ctrlKey || e.metaKey;
             if (!meta) return;
             const k = e.key.toLowerCase();
-            if (k === 'n') { e.preventDefault(); this.newNote(); }
+            if (k === 'n') {
+                e.preventDefault();
+                if (this.mode === 'project') this.newProjectFile();
+                else this.newNote();
+            }
             else if (k === 's') { e.preventDefault(); this.forceSave(); }
             else if (k === 'p') { e.preventDefault(); this.cycleView(); }
             else if (k === 'b') { e.preventDefault(); this.toggleSidebar(); }

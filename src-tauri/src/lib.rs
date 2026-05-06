@@ -547,6 +547,21 @@ fn read_project_file(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path, e))
 }
 
+/// Create a brand-new project file. Errors if the path already exists
+/// so the UI flow can prompt before clobbering — `write_project_file`
+/// is the unconditional overwrite path used by the auto-save loop.
+#[tauri::command]
+fn create_project_file(path: String, content: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if p.exists() {
+        return Err(format!("already exists: {}", path));
+    }
+    let parent = p.parent().ok_or_else(|| format!("no parent dir: {}", path))?;
+    fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
+    fs::write(&p, content).map_err(|e| format!("write {}: {}", path, e))?;
+    Ok(())
+}
+
 /// Atomic in-place write — same tmp + fsync + rename pattern used for
 /// library notes, but no frontmatter wrapping. Project files keep
 /// whatever shape the user put on disk.
@@ -960,6 +975,7 @@ pub fn run() {
             list_project_tree,
             read_project_file,
             write_project_file,
+            create_project_file,
             get_recent_projects,
         ])
         .run(tauri::generate_context!())
