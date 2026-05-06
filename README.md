@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="version: 0.9.0"      src="https://img.shields.io/badge/version-0.9.0-blue">
+  <img alt="version: 0.9.3"      src="https://img.shields.io/badge/version-0.9.3-blue">
   <img alt="courvux: 0.7.1"      src="https://img.shields.io/badge/courvux-0.7.1-success">
   <img alt="tauri: 2"            src="https://img.shields.io/badge/tauri-2-orange">
   <img alt="license: MIT"        src="https://img.shields.io/badge/license-MIT-lightgrey">
@@ -48,7 +48,8 @@ The chosen mode + last opened project are persisted across launches.
 - **Edit `.md` in place** with the same Markdown editor as library mode. Atomic tmp + fsync + rename writes. The auto-save scheduler snapshots the active mode + key (note id or file path) so a switch never lets a stale write fire against the wrong target.
 - **Image preview modal.** Click any image entry in the tree to view it inline in a backdrop modal — Esc / click-outside dismisses.
 - **Inline image rendering** in the Markdown preview. `![alt](images/foo.jpg)` resolves relative to each file's parent directory and serves through Tauri's `asset://` protocol; the project root is granted to the asset scope on open.
-- **Create files / folders.** "+ New" prompts for a name; `notes/2026/draft.md` creates the chain then the file, a trailing `/` makes the entry folder-only. "+ Folder" runs the same flow, folder-only. Each `/`-segment is sanitized individually so a name like `docs:bad/intro.md` becomes `docsbad/intro.md` instead of losing the slash.
+- **Create files / folders.** "+ New" opens an in-app modal asking for a name; `notes/2026/draft.md` creates the chain then the file, a trailing `/` makes the entry folder-only. "+ Folder" runs the same flow, folder-only. Each `/`-segment is sanitized individually so a name like `docs:bad/intro.md` becomes `docsbad/intro.md` instead of losing the slash. The modal replaces `window.prompt()` because WKWebView (macOS) deliberately strips it for security and would silently return null.
+- **Select a folder as the "+ New" target.** Click any folder in the tree to mark it as the create target — the next `+ New File` / `+ Folder` lands inside that folder instead of the project root. Click the same folder again, or click the project name in the sidebar header, to deselect and fall back to root. Clicking a file (md or image) auto-selects its parent so consecutive creates stay next to whatever you're currently working on. The modal hint always tells you where the entry will land.
 
 ### Native menu bar
 
@@ -231,7 +232,7 @@ courvux-tauri-example/
 For this app, the build report reads:
 
 ```
-[courvux-precompile] processed 1 file(s), 125 expression(s) precompiled, 0 template(s) fell back to runtime new Function.
+[courvux-precompile] processed 1 file(s), 134 expression(s) precompiled, 0 template(s) fell back to runtime new Function.
 ```
 
 Zero fallbacks → the runtime never has to call `new Function`, and the strict `script-src 'self'` CSP holds.
