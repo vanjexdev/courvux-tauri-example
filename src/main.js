@@ -90,7 +90,9 @@ createApp({
                         <img :src="logoUrl" alt="" width="20" height="20" class="shrink-0" aria-hidden="true" />
                         <span cv-if="mode === 'library'">Notepad</span>
                         <span cv-else
-                              :title="project?.path"
+                              @click="selectedDir = null"
+                              :title="(selectedDir ? 'Click to target project root for + New\n' : '') + (project?.path || '')"
+                              :class="selectedDir ? 'cursor-pointer hover:text-zinc-100' : ''"
                               class="truncate">{{ project?.name || 'Project' }}</span>
                     </h1>
                     <div class="flex items-center gap-1 shrink-0">
@@ -1339,9 +1341,11 @@ createApp({
                 if (next[node.path]) delete next[node.path];
                 else next[node.path] = true;
                 this.expanded = next;
-                // Mark this folder as the current "+ New" target so
-                // subsequent file/folder creation lands inside it.
-                this.selectedDir = node.path;
+                // Toggle the "+ New" target: clicking the already-selected
+                // folder a second time deselects it (next create lands at
+                // project root); clicking a different folder switches the
+                // target to that one.
+                this.selectedDir = (this.selectedDir === node.path) ? null : node.path;
                 return;
             }
             if (node.kind === 'image') {
