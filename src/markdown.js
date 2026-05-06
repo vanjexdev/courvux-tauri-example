@@ -85,17 +85,32 @@ function resolveAssetHref(href, baseDir) {
     return convertFileSrc(joined);
 }
 
-// Wire the image renderer in addition to code. We can't pass `baseDir` to
-// marked through its renderer hooks (no per-call context in v18), so we
-// stash the active project root in a module-local variable that the
-// renderer reads.
+// Wire image and link renderers. We can't pass `baseDir` /
+// `linkResolver` to marked through its renderer hooks (no per-call
+// context in v18), so we stash them in module-local variables that
+// the renderer reads — set/cleared inside `renderMarkdown` so a
+// concurrent caller can't see leftover state.
 let activeBaseDir = null;
+let activeLinkResolver = null;
 marked.use({
     renderer: {
         image({ href, title, text }) {
             const src = resolveAssetHref(href, activeBaseDir);
             const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
             return `<img src="${escapeHtml(src)}" alt="${escapeHtml(text ?? '')}"${titleAttr}/>`;
+        },
+        link({ href, title, text }) {
+            // Caller can supply a resolver (e.g. project-bundle PDF
+            // export rewriting cross-doc `.md` links into intra-PDF
+            // section anchors). Returning a non-null string replaces
+            // the href; null/undefined leaves it untouched.
+            let resolved = href;
+            if (activeLinkResolver) {
+                const r = activeLinkResolver(href, activeBaseDir);
+                if (r != null) resolved = r;
+            }
+            const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+            return `<a href="${escapeHtml(resolved)}"${titleAttr}>${text}</a>`;
         },
     },
 });
@@ -104,19 +119,26 @@ marked.use({
  * Render a Markdown string to sanitized HTML.
  *
  * Pipeline:
- *   1. marked parses Markdown → HTML, calling our renderer.code for fences
- *      and renderer.image for image tags (rewrites relative paths to
- *      `asset://` when `baseDir` is set).
+ *   1. marked parses Markdown → HTML, calling our renderer.code for fences,
+ *      renderer.image (rewrites relative paths to `asset://` when
+ *      `baseDir` is set), and renderer.link (delegates to `linkResolver`
+ *      when one is supplied — used by the project-PDF export to point
+ *      cross-doc `.md` links at intra-PDF section anchors).
  *   2. Prism colorizes inside the renderer.
  *   3. DOMPurify strips `<script>`, `on*=`, `javascript:` URLs, etc., so
- *      a hostile paste cannot execute even with strict CSP.
+ *      a hostile paste cannot execute even with strict CSP. The asset:
+ *      scheme is whitelisted via `ALLOWED_URI_REGEXP`; the in-document
+ *      `#` anchor scheme is permitted by the same regex.
  *
  * @param {string} src
- * @param {string|null} baseDir  absolute project root for `asset://` rewrite
+ * @param {string|null} baseDir            absolute dir for `asset://` rewrite
+ * @param {(href: string, baseDir: string|null) => string|null|undefined} [linkResolver]
+ *        optional rewriter for `<a href>` values
  * @returns {string} sanitized HTML
  */
-export function renderMarkdown(src, baseDir = null) {
+export function renderMarkdown(src, baseDir = null, linkResolver = null) {
     activeBaseDir = baseDir;
+    activeLinkResolver = linkResolver;
     try {
         return DOMPurify.sanitize(marked.parse(src ?? ''), {
             // Allow the syntax-highlighted spans Prism emits.
@@ -125,5 +147,6 @@ export function renderMarkdown(src, baseDir = null) {
         });
     } finally {
         activeBaseDir = null;
+        activeLinkResolver = null;
     }
 }
