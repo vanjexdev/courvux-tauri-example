@@ -44,6 +44,18 @@ const LAST_PROJECT_KEY  = 'courvux-notepad:last-project';  // path to reopen on 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 480;
 
+// Strip the last path segment, returning the parent directory. Returns
+// the input unchanged if it's already a root-ish path (no separator
+// after the leading slash). Used to track which folder the user is
+// "in" — clicking a file selects its parent so consecutive creates
+// stay next to it.
+function parentDir(p) {
+    if (!p) return p;
+    const lastSep = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    if (lastSep <= 0) return p;
+    return p.slice(0, lastSep);
+}
+
 // Resolve `.` and `..` segments without touching the filesystem. Used
 // by the PDF bundle's link resolver so `[X](../sub/other.md)` from a
 // nested file maps onto the same absolute path the file walker
@@ -195,7 +207,9 @@ createApp({
                             @click="onTreeClick(node)"
                             :class="(openFile && openFile.path === node.path)
                                 ? 'bg-emerald-500/10 border-l-2 border-emerald-500'
-                                : 'border-l-2 border-transparent hover:bg-zinc-800/50'"
+                                : (node.isDir && selectedDir === node.path)
+                                    ? 'bg-amber-500/10 border-l-2 border-amber-500/60'
+                                    : 'border-l-2 border-transparent hover:bg-zinc-800/50'"
                             :style="'padding-left:' + (node.depth * 12 + 12) + 'px'"
                             class="pr-3 py-1 cursor-pointer text-xs flex items-center gap-1.5 select-none">
                             <span cv-if="node.isDir"
@@ -653,6 +667,13 @@ createApp({
         // `openFile` is the current editor target (md or image preview).
         project: null,           // { path, name, tree }
         expanded: {},            // { [absolutePath]: true } per dir node
+        // Currently-selected folder in the tree. `+ New File` and
+        // `+ Folder` create their entries inside this folder; null
+        // falls back to the project root. Set when the user clicks a
+        // folder in the tree (also when they open a file — its parent
+        // dir becomes the target so consecutive `+ New` calls stay
+        // in the same folder).
+        selectedDir: null,       // absolute path or null = project root
         openFile: null,          // { path, name, content, kind: 'md'|'image' }
         projectSaveStatus: 'saved',
         recentProjects: [],
@@ -737,6 +758,17 @@ createApp({
             };
             for (const c of root.children) walk(c, 0);
             return out;
+        },
+        // Path of `selectedDir` relative to the project root, for the
+        // hint shown in the New File / New Folder modals. Empty string
+        // when no folder is selected (i.e. creates land at root).
+        selectedDirRel() {
+            if (!this.selectedDir || !this.project) return '';
+            const root = this.project.path.replace(/[\/\\]+$/, '');
+            if (this.selectedDir === root) return '';
+            return this.selectedDir.startsWith(root)
+                ? this.selectedDir.slice(root.length).replace(/^[\/\\]+/, '')
+                : this.selectedDir;
         },
         sortedNotes() {
             return [...this.notes].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1086,6 +1118,7 @@ createApp({
                 this.mode = 'project';
                 this.expanded = {};
                 this.openFile = null;
+                this.selectedDir = null;
                 this.projectSaveStatus = 'saved';
                 this.recentProjects = await getRecentProjects();
                 try {
@@ -1109,6 +1142,7 @@ createApp({
             this.project = null;
             this.openFile = null;
             this.expanded = {};
+            this.selectedDir = null;
             this.projectSaveStatus = 'saved';
             this.mode = 'library';
             try {
@@ -1174,10 +1208,11 @@ createApp({
         // having the slash itself stripped.
         async newProjectFile() {
             if (!this.project) return;
+            const target = this.selectedDirRel || 'project root';
             const raw = await this.askName(
                 'New file',
                 'untitled.md',
-                'Use "/" for subfolders, trailing "/" makes it a folder.',
+                `Will be created in: ${target}. Use "/" for subfolders, trailing "/" for folder only.`,
             );
             if (!raw) return;
             await this.createProjectEntry(raw);
@@ -1185,10 +1220,11 @@ createApp({
 
         async newProjectFolder() {
             if (!this.project) return;
+            const target = this.selectedDirRel || 'project root';
             const raw = await this.askName(
                 'New folder',
                 'subfolder',
-                'Use "/" for nested folders (e.g. "docs/2026").',
+                `Will be created in: ${target}. Use "/" for nested folders.`,
             );
             if (!raw) return;
             // Force folder semantics with a trailing slash so the shared
@@ -1201,6 +1237,13 @@ createApp({
         async createProjectEntry(rawInput) {
             const sep = this.project.path.includes('\\') ? '\\' : '/';
             const rootAbs = this.project.path.replace(/[\/\\]+$/, '');
+            // The "+ New" target — folder the user clicked in the tree,
+            // or the project root if no folder is selected. Selected
+            // folder takes precedence so users can build out a tree by
+            // clicking around without typing the full path each time.
+            const baseAbs = (this.selectedDir && this.selectedDir.startsWith(rootAbs))
+                ? this.selectedDir.replace(/[\/\\]+$/, '')
+                : rootAbs;
 
             // Trailing slash signals "create the folder, no file".
             const isFolderOnly = /[\/\\]\s*$/.test(rawInput);
@@ -1217,8 +1260,8 @@ createApp({
             const dirSegments = segments;
 
             const dirPath = dirSegments.length === 0
-                ? rootAbs
-                : rootAbs + sep + dirSegments.join(sep);
+                ? baseAbs
+                : baseAbs + sep + dirSegments.join(sep);
 
             // Create the parent chain first (idempotent).
             if (dirSegments.length > 0 || isFolderOnly) {
@@ -1296,6 +1339,9 @@ createApp({
                 if (next[node.path]) delete next[node.path];
                 else next[node.path] = true;
                 this.expanded = next;
+                // Mark this folder as the current "+ New" target so
+                // subsequent file/folder creation lands inside it.
+                this.selectedDir = node.path;
                 return;
             }
             if (node.kind === 'image') {
@@ -1303,6 +1349,10 @@ createApp({
                     src: convertFileSrc(node.path),
                     alt: node.name,
                 };
+                // Set the file's parent dir as the target — keeps
+                // consecutive `+ New` operations next to whatever the
+                // user is currently working with.
+                this.selectedDir = parentDir(node.path);
                 return;
             }
             if (node.kind === 'md') {
@@ -1319,6 +1369,7 @@ createApp({
                         kind: 'md',
                     };
                     this.projectSaveStatus = 'saved';
+                    this.selectedDir = parentDir(node.path);
                 } catch (err) {
                     console.error('[notepad] read project file failed:', err);
                     alert('Could not open file: ' + err);
