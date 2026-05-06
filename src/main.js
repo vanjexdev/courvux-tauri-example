@@ -1,5 +1,6 @@
 import { createApp } from 'courvux';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 import {
     listNotes, readNote, writeNote, deleteNote,
@@ -376,12 +377,13 @@ createApp({
                         <p class="text-xs text-zinc-500 mt-1">Version {{ appVersion }}</p>
                         <p class="text-xs text-zinc-400 mt-4 leading-relaxed">
                             Notepad demo built with the
-                            <a href="https://github.com/vanjexdev/courvux"
-                               target="_blank" rel="noopener"
-                               class="text-emerald-400 hover:text-emerald-300">Courvux</a>
+                            <a href="#"
+                               @click.prevent="openExternal('https://github.com/vanjexdev/courvux')"
+                               class="text-emerald-400 hover:text-emerald-300 cursor-pointer">Courvux</a>
                             reactive UI framework, running inside
-                            <a href="https://tauri.app/" target="_blank" rel="noopener"
-                               class="text-emerald-400 hover:text-emerald-300">Tauri 2</a>
+                            <a href="#"
+                               @click.prevent="openExternal('https://tauri.app/')"
+                               class="text-emerald-400 hover:text-emerald-300 cursor-pointer">Tauri 2</a>
                             with strict CSP and no
                             <code class="text-zinc-500">unsafe-eval</code>.
                         </p>
@@ -389,9 +391,9 @@ createApp({
 
                     <footer class="px-5 py-3 border-t border-zinc-800 flex items-center justify-between text-[11px] text-zinc-500">
                         <span>MIT · © {{ appYear }} Vanjex</span>
-                        <a href="https://github.com/vanjexdev/courvux-tauri-example"
-                           target="_blank" rel="noopener"
-                           class="text-emerald-400 hover:text-emerald-300">View source ↗</a>
+                        <a href="#"
+                           @click.prevent="openExternal('https://github.com/vanjexdev/courvux-tauri-example')"
+                           class="text-emerald-400 hover:text-emerald-300 cursor-pointer">View source ↗</a>
                     </footer>
                 </div>
             </div>
@@ -716,6 +718,19 @@ createApp({
                 }
             } catch (err) {
                 console.error('[notepad] refresh failed:', err);
+            }
+        },
+
+        // Tauri webview sandboxes `<a target="_blank">` (no browser context),
+        // so the About-dialog links go through `tauri-plugin-opener` which
+        // hands the URL to the OS default browser. The capability scope in
+        // src-tauri/capabilities/default.json restricts which hosts can be
+        // reached, so callers can't pass arbitrary URLs from user input.
+        async openExternal(url) {
+            try {
+                await openUrl(url);
+            } catch (err) {
+                console.error('[notepad] open_url failed:', err);
             }
         },
 
