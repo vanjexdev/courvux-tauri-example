@@ -4,7 +4,7 @@
 
 import {
     Plus, Check, Pencil, Eye, Columns2, X, Save, Folder, Settings,
-    PanelLeftClose, PanelLeftOpen, Trash2, FileText,
+    PanelLeftClose, PanelLeftOpen, Trash2, FileText, Search, Info,
 } from 'lucide';
 
 /**
@@ -56,4 +56,6 @@ export const ICONS = {
     sidebarOpen:    lucideToSvg(PanelLeftOpen),
     trash:          lucideToSvg(Trash2),
     file:           lucideToSvg(FileText),
+    search:         lucideToSvg(Search),
+    info:           lucideToSvg(Info),
 };
