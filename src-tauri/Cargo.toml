@@ -1,6 +1,6 @@
 [package]
 name = "courvux-tauri-notepad"
-version = "0.8.1"
+version = "0.9.0"
 edition = "2021"
 authors = ["Vanjex <vanjexdev@gmail.com>"]
 license = "MIT"
@@ -22,6 +22,7 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+base64 = "0.22"
 
 [profile.release]
 panic = "abort"
