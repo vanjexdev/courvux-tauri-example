@@ -50,6 +50,26 @@ const escapeHtml = (s) => String(s)
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
+// Resolve `.` and `..` segments without touching the filesystem. Used
+// by the PDF bundle's link resolver so `[X](../sub/other.md)` from a
+// nested file maps onto the same absolute path the file walker
+// recorded — otherwise the lookup misses and the link stays raw.
+function normalizePath(p) {
+    if (!p) return p;
+    const sep = p.includes('\\') && !p.startsWith('/') ? '\\' : '/';
+    const isAbs = p.startsWith('/') || /^[A-Za-z]:[\\\/]/.test(p);
+    const drive = /^[A-Za-z]:/.test(p) ? p.slice(0, 2) : '';
+    const body = drive ? p.slice(2) : p;
+    const parts = body.split(/[\/\\]+/);
+    const stack = [];
+    for (const part of parts) {
+        if (!part || part === '.') continue;
+        if (part === '..') { stack.pop(); continue; }
+        stack.push(part);
+    }
+    return drive + (isAbs ? sep : '') + stack.join(sep);
+}
+
 createApp({
     template: `
         <div cv-cloak class="flex h-full">
@@ -1336,8 +1356,19 @@ createApp({
             const sep = this.project.path.includes('\\') ? '\\' : '/';
             const rootAbs = this.project.path.replace(/[\/\\]+$/, '');
 
+            // Build absolute-path → section-id map up-front so the link
+            // resolver can rewrite cross-doc references like
+            // `[other](other.md)` into intra-PDF jumps `#pdf-3`. Without
+            // this, those hrefs land in the printed PDF as relative
+            // strings and the reader can't follow them.
+            const fileToAnchor = new Map();
+            mdFiles.forEach((node, i) => {
+                fileToAnchor.set(node.path.toLowerCase(), `pdf-${i}`);
+            });
+
             const sections = [];
-            for (const node of mdFiles) {
+            for (let i = 0; i < mdFiles.length; i++) {
+                const node = mdFiles[i];
                 let content = '';
                 try {
                     content = await readProjectFile(node.path);
@@ -1353,8 +1384,36 @@ createApp({
                 const relPath = node.path.startsWith(rootAbs)
                     ? node.path.slice(rootAbs.length).replace(/^[\/\\]+/, '')
                     : node.name;
-                const html = renderMarkdown(content, baseDir);
-                sections.push(`<section class="markdown-body"><h1 class="pdf-section-title">${escapeHtml(relPath)}</h1>${html}</section>`);
+
+                const linkResolver = (href, refBaseDir) => {
+                    if (!href) return null;
+                    // Leave URL-scheme + protocol-relative + in-page
+                    // anchor links alone — WebKit's print pipeline
+                    // already wires `https://...` as PDF link
+                    // annotations, and `#heading` is a local anchor
+                    // we don't manage.
+                    if (/^[a-z][a-z0-9+.\-]*:/i.test(href)
+                        || href.startsWith('//')
+                        || href.startsWith('#')) {
+                        return null;
+                    }
+                    // Resolve the href against this file's directory,
+                    // then look it up in the project's section map. If
+                    // the link points to a `.md` we're including in the
+                    // bundle, redirect it to that section's anchor.
+                    let candidate = href;
+                    if (!candidate.startsWith('/') && !/^[A-Za-z]:[\\\/]/.test(candidate)) {
+                        const dirSep = refBaseDir.includes('\\') ? '\\' : '/';
+                        const trimmed = refBaseDir.replace(/[\/\\]+$/, '');
+                        candidate = `${trimmed}${dirSep}${href.replace(/^[\/\\]+/, '')}`;
+                    }
+                    const normalized = normalizePath(candidate);
+                    const anchor = fileToAnchor.get(normalized.toLowerCase());
+                    return anchor ? `#${anchor}` : null;
+                };
+
+                const html = renderMarkdown(content, baseDir, linkResolver);
+                sections.push(`<section id="pdf-${i}" class="markdown-body"><h1 class="pdf-section-title">${escapeHtml(relPath)}</h1>${html}</section>`);
             }
 
             // Inject a sibling container outside #app so our print CSS
