@@ -95,3 +95,34 @@ export const exportMd = (dest, title, body) => invoke('export_md_file', { dest, 
  * @returns {Promise<string[]>}
  */
 export const takePendingOpenFiles = () => invoke('take_pending_open_files');
+
+// ── Project mode ───────────────────────────────────────────────────────────
+//
+// Project mode opens an arbitrary folder and edits its `.md` files in
+// place — no slug rename, no YAML frontmatter. Image files surface in
+// the tree and render via Tauri's `asset://` protocol.
+
+/**
+ * Validate `path` as a project folder and remember it as the most-recently-
+ * opened project. Returns the canonicalized absolute path.
+ *
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
+export const openProjectFolder = (path) => invoke('open_project_folder', { path });
+
+/** Recursive tree of the project root. Hidden files + a denylist of
+ *  noisy directories (`node_modules`, `target`, `.git`, …) are skipped.
+ *  Depth + file-count caps prevent the call from hanging on huge dirs. */
+export const listProjectTree = (path) => invoke('list_project_tree', { path });
+
+/** Read a project file's raw contents (no frontmatter parsing). */
+export const readProjectFile = (path) => invoke('read_project_file', { path });
+
+/** Atomic in-place write of a project file. */
+export const writeProjectFile = (path, content) =>
+    invoke('write_project_file', { path, content });
+
+/** Most-recently-opened project folders, newest first. Entries whose
+ *  folders no longer exist are pruned lazily by the Rust side. */
+export const getRecentProjects = () => invoke('get_recent_projects');

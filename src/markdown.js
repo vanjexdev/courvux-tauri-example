@@ -4,6 +4,7 @@
 
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { convertFileSrc } from '@tauri-apps/api/core';
 
 // Prism core. Each `import 'prismjs/components/prism-<lang>'` plugs that
 // language's grammar into Prism.languages[<lang>]; we only ship the
@@ -58,21 +59,71 @@ marked.use({
     breaks: true,
 });
 
+// DOMPurify defaults reject the `asset:` URI scheme Tauri uses to serve
+// local files into the webview. We extend the default URL regex to allow
+// it so `<img src="asset://localhost/...">` survives sanitization.
+// Windows resolves `convertFileSrc` to `https://asset.localhost/...`,
+// which the default regex already permits — so this only matters for
+// Linux / macOS where the scheme is the literal `asset:`.
+const ALLOWED_URI_REGEXP = /^(?:(?:https?|ftp|mailto|tel|callto|sms|cid|xmpp|asset):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+
+/**
+ * Resolve a possibly-relative href to an absolute path under `baseDir`.
+ * Leaves `https?:`, `data:`, `asset:`, and absolute filesystem paths
+ * untouched. Used by the markdown renderer's image hook.
+ */
+function resolveAssetHref(href, baseDir) {
+    if (!href || !baseDir) return href;
+    if (/^[a-z][a-z0-9+.\-]*:/i.test(href) || href.startsWith('//')) return href;
+    // Posix-style relative paths in markdown — keep their separator and
+    // join onto baseDir without normalizing away `../` (Tauri's asset
+    // protocol enforces the scope, so a sneaky `../` outside the project
+    // root just 404s instead of leaking).
+    const sep = baseDir.includes('\\') ? '\\' : '/';
+    const trimmed = baseDir.replace(/[\/\\]+$/, '');
+    const joined = `${trimmed}${sep}${href.replace(/^[\/\\]+/, '')}`;
+    return convertFileSrc(joined);
+}
+
+// Wire the image renderer in addition to code. We can't pass `baseDir` to
+// marked through its renderer hooks (no per-call context in v18), so we
+// stash the active project root in a module-local variable that the
+// renderer reads.
+let activeBaseDir = null;
+marked.use({
+    renderer: {
+        image({ href, title, text }) {
+            const src = resolveAssetHref(href, activeBaseDir);
+            const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+            return `<img src="${escapeHtml(src)}" alt="${escapeHtml(text ?? '')}"${titleAttr}/>`;
+        },
+    },
+});
+
 /**
  * Render a Markdown string to sanitized HTML.
  *
  * Pipeline:
- *   1. marked parses Markdown → HTML, calling our renderer.code for fences.
+ *   1. marked parses Markdown → HTML, calling our renderer.code for fences
+ *      and renderer.image for image tags (rewrites relative paths to
+ *      `asset://` when `baseDir` is set).
  *   2. Prism colorizes inside the renderer.
  *   3. DOMPurify strips `<script>`, `on*=`, `javascript:` URLs, etc., so
  *      a hostile paste cannot execute even with strict CSP.
  *
  * @param {string} src
+ * @param {string|null} baseDir  absolute project root for `asset://` rewrite
  * @returns {string} sanitized HTML
  */
-export function renderMarkdown(src) {
-    return DOMPurify.sanitize(marked.parse(src ?? ''), {
-        // Allow the syntax-highlighted spans Prism emits.
-        ADD_ATTR: ['class'],
-    });
+export function renderMarkdown(src, baseDir = null) {
+    activeBaseDir = baseDir;
+    try {
+        return DOMPurify.sanitize(marked.parse(src ?? ''), {
+            // Allow the syntax-highlighted spans Prism emits.
+            ADD_ATTR: ['class'],
+            ALLOWED_URI_REGEXP,
+        });
+    } finally {
+        activeBaseDir = null;
+    }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "courvux-tauri-notepad"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["Vanjex <vanjexdev@gmail.com>"]
 license = "MIT"
@@ -14,7 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-opener = "2"
