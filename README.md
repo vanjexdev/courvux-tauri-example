@@ -1,11 +1,19 @@
-# courvux-tauri-notepad
+<p align="center">
+  <img alt="Courvux Notepad" src="./logo.png" width="140" height="140">
+</p>
 
-Notepad demo app showing the [Courvux](https://github.com/vanjexdev/courvux) reactive UI framework running inside [Tauri 2](https://tauri.app/), styled with [Tailwind 4](https://tailwindcss.com/), and shipping with **strict CSP** (`script-src 'self'`, no `unsafe-eval`) thanks to the [`courvux-precompiler`](https://github.com/vanjexdev/courvux-precompiler) Rust → WASM build-time expression compiler.
+<h1 align="center">courvux-tauri-notepad</h1>
 
-![status: demo](https://img.shields.io/badge/status-demo-blue)
-![courvux: 0.7.1](https://img.shields.io/badge/courvux-0.7.1-success)
-![tauri: 2](https://img.shields.io/badge/tauri-2-orange)
-![license: MIT](https://img.shields.io/badge/license-MIT-lightgrey)
+<p align="center">
+  Notepad demo app showing the <a href="https://github.com/vanjexdev/courvux">Courvux</a> reactive UI framework running inside <a href="https://tauri.app/">Tauri 2</a>, styled with <a href="https://tailwindcss.com/">Tailwind 4</a>, and shipping with <strong>strict CSP</strong> (<code>script-src 'self'</code>, no <code>unsafe-eval</code>) thanks to the <a href="https://github.com/vanjexdev/courvux-precompiler"><code>courvux-precompiler</code></a> Rust → WASM build-time expression compiler.
+</p>
+
+<p align="center">
+  <img alt="status: demo"        src="https://img.shields.io/badge/status-demo-blue">
+  <img alt="courvux: 0.7.1"      src="https://img.shields.io/badge/courvux-0.7.1-success">
+  <img alt="tauri: 2"            src="https://img.shields.io/badge/tauri-2-orange">
+  <img alt="license: MIT"        src="https://img.shields.io/badge/license-MIT-lightgrey">
+</p>
 
 ## What it shows
 
