@@ -9,7 +9,7 @@ import {
     getAutoSave, setAutoSave,
     importMd, exportMd, takePendingOpenFiles,
     openProjectFolder, listProjectTree, readProjectFile, writeProjectFile,
-    createProjectFile, getRecentProjects,
+    createProjectFile, createProjectDir, getRecentProjects,
 } from './tauri.js';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { renderMarkdown } from './markdown.js';
@@ -39,6 +39,16 @@ const LAST_PROJECT_KEY  = 'courvux-notepad:last-project';  // path to reopen on 
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 480;
+
+// Plain HTML escape for the section titles we inject into the project
+// PDF bundle. The user-controlled value is the file path, but defense
+// against `<` / `&` injection is cheap insurance even though DOMPurify
+// would catch anything dangerous afterwards.
+const escapeHtml = (s) => String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 
 createApp({
     template: `
@@ -87,6 +97,14 @@ createApp({
                             title="New note (Ctrl+N)">
                             <span cv-html.raw="icons.plus"></span>
                             <span>New</span>
+                        </button>
+                        <button
+                            cv-if="mode === 'project'"
+                            @click="newProjectFolder()"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="New folder"
+                            title="New folder">
+                            <span cv-html.raw="icons.folderPlus" aria-hidden="true"></span>
                         </button>
                         <button
                             cv-if="mode === 'project'"
@@ -1054,22 +1072,81 @@ createApp({
             }
         },
 
-        // Create a new empty .md file at the project root. The browser
+        // Create a new file or folder at the project root. The browser
         // `prompt()` is sufficient here — it's modal, OS-styled in Tauri,
         // and avoids dragging in a third dialog component for a one-off.
+        //
+        // Slash semantics:
+        //   `notes/2026/draft.md`  → mkdir -p `notes/2026` then create file
+        //   `notes/2026/`          → mkdir -p `notes/2026` (folder only)
+        //   `draft`                → `draft.md` (auto-extension)
+        //
+        // Each `/`-segment is sanitized individually so a name like
+        // `docs:bad/intro.md` becomes `docsbad/intro.md` rather than
+        // having the slash itself stripped.
         async newProjectFile() {
             if (!this.project) return;
-            const raw = window.prompt('New file name:', 'untitled.md');
+            const raw = window.prompt('New file (use "/" for subfolders, trailing "/" = folder only):', 'untitled.md');
             if (!raw) return;
-            // Strip the path separators / shell metachars Linux + Windows
-            // both refuse, then default the extension to `.md` so the user
-            // doesn't have to type it.
-            let name = raw.trim().replace(/[\/\\:*?"<>|]/g, '');
-            if (!name) return;
-            if (!/\.[a-z0-9]+$/i.test(name)) name += '.md';
+            await this.createProjectEntry(raw);
+        },
 
+        async newProjectFolder() {
+            if (!this.project) return;
+            const raw = window.prompt('New folder (use "/" for nested):', 'subfolder');
+            if (!raw) return;
+            // Force folder semantics with a trailing slash so the shared
+            // helper takes the mkdir-p branch even when the user typed a
+            // name that looks file-like (e.g. `docs.v2`).
+            const normalized = raw.endsWith('/') ? raw : raw + '/';
+            await this.createProjectEntry(normalized);
+        },
+
+        async createProjectEntry(rawInput) {
             const sep = this.project.path.includes('\\') ? '\\' : '/';
-            const fullPath = this.project.path.replace(/[\/\\]+$/, '') + sep + name;
+            const rootAbs = this.project.path.replace(/[\/\\]+$/, '');
+
+            // Trailing slash signals "create the folder, no file".
+            const isFolderOnly = /[\/\\]\s*$/.test(rawInput);
+            // Split on either separator so users on either OS can type
+            // forward slashes (the canonical markdown convention).
+            const segments = rawInput
+                .replace(/^[\/\\]+|[\/\\]+$/g, '')
+                .split(/[\/\\]+/)
+                .map(s => s.trim().replace(/[:*?"<>|]/g, ''))  // shell metachars
+                .filter(Boolean);
+            if (segments.length === 0) return;
+
+            const fileSegment = isFolderOnly ? null : segments.pop();
+            const dirSegments = segments;
+
+            const dirPath = dirSegments.length === 0
+                ? rootAbs
+                : rootAbs + sep + dirSegments.join(sep);
+
+            // Create the parent chain first (idempotent).
+            if (dirSegments.length > 0 || isFolderOnly) {
+                try {
+                    await createProjectDir(dirPath);
+                } catch (err) {
+                    console.error('[notepad] create dir failed:', err);
+                    alert('Could not create folder: ' + err);
+                    return;
+                }
+            }
+
+            if (!fileSegment) {
+                await this.refreshTree();
+                // Auto-expand the chain so the user sees their new folder.
+                this.expandPath(dirPath);
+                return;
+            }
+
+            // Default `.md` only when there's no extension at all — keeps
+            // `notes.txt` or `image.png` paths intact for users who want
+            // to drop arbitrary files into the project.
+            const fileName = /\.[a-z0-9]+$/i.test(fileSegment) ? fileSegment : `${fileSegment}.md`;
+            const fullPath = `${dirPath}${sep}${fileName}`;
 
             try {
                 await createProjectFile(fullPath, '');
@@ -1079,11 +1156,29 @@ createApp({
                 return;
             }
             await this.refreshTree();
-            // Open the freshly-created file in the editor so the user can
-            // start typing immediately. We reuse the tree-click path so
-            // the dirty-prompt + autosave bookkeeping stays in one place.
+            this.expandPath(dirPath);
+            // Reuse the tree-click flow so dirty-prompt + autosave
+            // bookkeeping stays in one place.
             const node = this.findNodeByPath(this.project.tree, fullPath);
             if (node) await this.onTreeClick({ ...node, isDir: false });
+        },
+
+        // Expand every ancestor of `path` so the new entry is visible in
+        // the flat-tree render.
+        expandPath(path) {
+            if (!this.project) return;
+            const root = this.project.path.replace(/[\/\\]+$/, '');
+            if (!path.startsWith(root)) return;
+            const next = { ...this.expanded };
+            const sep = root.includes('\\') ? '\\' : '/';
+            const rel = path.slice(root.length).replace(/^[\/\\]+/, '');
+            const segs = rel.split(/[\/\\]+/).filter(Boolean);
+            let cursor = root;
+            for (const s of segs) {
+                cursor = `${cursor}${sep}${s}`;
+                next[cursor] = true;
+            }
+            this.expanded = next;
         },
 
         findNodeByPath(node, path) {
@@ -1202,6 +1297,82 @@ createApp({
             } catch (err) {
                 console.error('[notepad] export failed:', err);
                 alert('Save As failed: ' + err);
+            }
+        },
+
+        // Bundle every `.md` in the project into a single printable
+        // surface and trigger window.print(). Each section gets the
+        // file's path-from-root as its <h1>, and `break-before: page`
+        // separates them so each file lands on its own page in the PDF.
+        // Image sources resolve relative to each file's parent dir,
+        // not the project root, matching what marked sees inside the
+        // app's normal preview.
+        async exportProjectPdf() {
+            if (!this.project) {
+                alert('Open a project first.');
+                return;
+            }
+            // Flush any pending edits in the currently-open file so the
+            // bundled PDF reflects the on-disk state.
+            if (this.projectSaveStatus === 'unsaved' || this.projectSaveStatus === 'dirty') {
+                await this.forceSave();
+            }
+
+            const mdFiles = [];
+            const collect = (node) => {
+                if (!node) return;
+                if (node.kind === 'md') { mdFiles.push(node); return; }
+                if (node.kind === 'dir' && node.children) {
+                    for (const c of node.children) collect(c);
+                }
+            };
+            collect(this.project.tree);
+
+            if (mdFiles.length === 0) {
+                alert('No Markdown files in this project.');
+                return;
+            }
+
+            const sep = this.project.path.includes('\\') ? '\\' : '/';
+            const rootAbs = this.project.path.replace(/[\/\\]+$/, '');
+
+            const sections = [];
+            for (const node of mdFiles) {
+                let content = '';
+                try {
+                    content = await readProjectFile(node.path);
+                } catch (err) {
+                    console.warn('[notepad] export bundle skip unreadable:', node.path, err);
+                    continue;
+                }
+                // baseDir is the parent dir of this specific .md file —
+                // markdown image links are relative to the file, not the
+                // project root.
+                const lastSep = Math.max(node.path.lastIndexOf('/'), node.path.lastIndexOf('\\'));
+                const baseDir = lastSep > 0 ? node.path.slice(0, lastSep) : rootAbs;
+                const relPath = node.path.startsWith(rootAbs)
+                    ? node.path.slice(rootAbs.length).replace(/^[\/\\]+/, '')
+                    : node.name;
+                const html = renderMarkdown(content, baseDir);
+                sections.push(`<section class="markdown-body"><h1 class="pdf-section-title">${escapeHtml(relPath)}</h1>${html}</section>`);
+            }
+
+            // Inject a sibling container outside #app so our print CSS
+            // can isolate it cleanly without fighting the editor's
+            // flexbox layout. Removed in the finally block below.
+            const container = document.createElement('div');
+            container.id = 'pdf-bundle';
+            container.innerHTML = sections.join('');
+            document.body.appendChild(container);
+            document.body.classList.add('printing-bundle');
+
+            await this.$nextTick();
+            await this.$nextTick();
+            try {
+                window.print();
+            } finally {
+                document.body.classList.remove('printing-bundle');
+                container.remove();
             }
         },
 
@@ -1362,7 +1533,8 @@ createApp({
                 case 'close_project': await this.closeProject();  break;
                 case 'save':          await this.forceSave();     break;
                 case 'save_as':       await this.saveAs();        break;
-                case 'export_pdf':    await this.exportPdf();     break;
+                case 'export_pdf':         await this.exportPdf();        break;
+                case 'export_project_pdf': await this.exportProjectPdf(); break;
             }
         }).catch(err => console.error('[notepad] menu listener failed:', err));
 
