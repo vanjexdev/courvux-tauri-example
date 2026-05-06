@@ -214,6 +214,24 @@ fn set_notes_dir(state: State<'_, AppState>, path: String) -> Result<String, Str
     }
     fs::create_dir_all(&new_dir).map_err(|e| format!("create dir: {}", e))?;
 
+    // Write-permission probe. `create_dir_all` succeeds in cases where a
+    // directory exists but the calling user can list it without writing
+    // (network mounts, NAS shares with read-only ACLs, macOS sandboxed
+    // app-data dirs, …). Without this probe, the first save fires its own
+    // alert from the JS side and leaves the user with a config pointing
+    // at a non-functional folder. Touching a tiny tempfile and removing
+    // it surfaces the failure here, while the UI still has a clean
+    // recovery path.
+    let probe = new_dir.join(".courvux-write-test");
+    match fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = fs::remove_file(&probe);
+        }
+        Err(err) => {
+            return Err(format!("folder is not writable: {}", err));
+        }
+    }
+
     let config_path = {
         let inner = state.inner.lock().unwrap();
         inner.config_path.clone()

@@ -8,10 +8,11 @@ import {
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
 
-const debounce = (fn, ms) => {
-    let t;
-    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-};
+// Note: we used to lean on a generic `debounce()` helper for the auto-save
+// schedule, but that hides the timer from the caller. The auto-save needs
+// to be cancelable from outside (so a fast Save/select doesn't race the
+// pending write), and the inline scheduler in onMount() exposes both
+// `schedule` and `cancel` through closure.
 
 // Sidebar width is a UI preference, not a per-note value — persist in
 // localStorage so it survives across sessions on the same install.
@@ -37,8 +38,9 @@ createApp({
                         <button
                             @click="settingsOpen = true"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="Open settings"
                             title="Settings">
-                            <span cv-html.raw="icons.settings"></span>
+                            <span cv-html.raw="icons.settings" aria-hidden="true"></span>
                         </button>
                         <button
                             @click="newNote()"
@@ -79,11 +81,15 @@ createApp({
                     {{ storageDir || 'Loading…' }}
                 </footer>
 
-                <!-- Drag handle on the right edge to resize the sidebar. -->
+                <!-- Drag handle on the right edge to resize the sidebar.
+                     Hidden from the a11y tree because there's no keyboard
+                     equivalent yet — Ctrl+B toggle is the screen-reader
+                     story. Future: arrow-key resize when focused. -->
                 <div
                     @mousedown="startResize($event)"
                     class="absolute top-0 right-0 h-full w-1 cursor-col-resize hover:bg-emerald-500/50"
                     :class="resizing ? 'bg-emerald-500/70' : ''"
+                    aria-hidden="true"
                     title="Drag to resize"></div>
             </aside>
 
@@ -95,8 +101,10 @@ createApp({
                         <button
                             @click="toggleSidebar()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :aria-label="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'"
+                            :aria-expanded="sidebarOpen ? 'true' : 'false'"
                             :title="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'">
-                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen"></span>
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
                         </button>
                     </header>
                     <div class="flex-1 flex items-center justify-center text-zinc-600">
@@ -115,8 +123,10 @@ createApp({
                         <button
                             @click="toggleSidebar()"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :aria-label="sidebarOpen ? 'Hide sidebar (Ctrl+B)' : 'Show sidebar (Ctrl+B)'"
+                            :aria-expanded="sidebarOpen ? 'true' : 'false'"
                             :title="sidebarOpen ? 'Hide sidebar (Ctrl+B)' : 'Show sidebar (Ctrl+B)'">
-                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen"></span>
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
                         </button>
 
                         <input
@@ -146,8 +156,9 @@ createApp({
                         <button
                             @click="confirmDelete(selected.id)"
                             class="p-1.5 rounded text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
+                            aria-label="Delete this note"
                             title="Delete this note">
-                            <span cv-html.raw="icons.trash"></span>
+                            <span cv-html.raw="icons.trash" aria-hidden="true"></span>
                         </button>
                     </header>
 
@@ -177,18 +188,22 @@ createApp({
             <!-- ── Settings modal ──────────────────────────────────────── -->
             <div cv-if="settingsOpen"
                  @click.self="settingsOpen = false"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="settings-title"
                  class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
                 <div class="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl">
                     <header class="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
-                        <h2 class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
-                            <span cv-html.raw="icons.settings"></span>
+                        <h2 id="settings-title" class="text-sm font-semibold text-zinc-100 inline-flex items-center gap-2">
+                            <span cv-html.raw="icons.settings" aria-hidden="true"></span>
                             <span>Settings</span>
                         </h2>
                         <button
                             @click="settingsOpen = false"
                             class="p-1 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="Close settings"
                             title="Close">
-                            <span cv-html.raw="icons.x"></span>
+                            <span cv-html.raw="icons.x" aria-hidden="true"></span>
                         </button>
                     </header>
 
@@ -309,6 +324,12 @@ createApp({
             if (this.saveStatus === 'unsaved' || this.saveStatus === 'dirty') {
                 if (!confirm('You have unsaved changes. Switch anyway?')) return;
             }
+            // Drop any pending autosave for the note we're leaving so it
+            // can't fire later against `this.selected` after we've
+            // switched. The id-snapshot inside scheduleAutoSave catches it
+            // too, but cancelling explicitly avoids the wasted timer + the
+            // confused state-status flicker.
+            this.cancelAutoSave?.();
             const note = this.notes.find(n => n.id === id);
             if (!note) return;
             this.selectedId = id;
@@ -351,9 +372,18 @@ createApp({
             this.saveStatus = 'dirty';
             this.scheduleAutoSave();
         },
+        // scheduleAutoSave / cancelAutoSave are wired in onMount() so the
+        // closure-captured timer is per-component and can be canceled from
+        // select() (preventing a stale autosave from firing against the
+        // wrong note after the user switches selection).
         scheduleAutoSave: null,
+        cancelAutoSave: null,
 
         async forceSave() {
+            // The user explicitly asked to save; cancel any pending debounce
+            // so the timeout doesn't fire a redundant second write right
+            // after this completes.
+            this.cancelAutoSave?.();
             await this.persist();
         },
 
@@ -497,9 +527,27 @@ createApp({
             console.error('[notepad] startup load failed:', err);
         }
 
-        this.scheduleAutoSave = debounce(() => {
-            if (this.saveStatus === 'dirty') this.persist();
-        }, 600);
+        // Cancelable debounced autosave. The closure-captured `timer` lets
+        // both onEdit() (resets) and select() (cancels on note switch) reach
+        // it without it leaking into reactive state. We also snapshot
+        // `selectedId` at schedule time and verify it again when the timer
+        // fires — defense-in-depth against the user switching notes during
+        // the 600 ms window. Without that check, a pending autosave for
+        // note A could run against `this.selected` (now note B) and write
+        // A's title/body into B's file.
+        let autoSaveTimer = null;
+        this.scheduleAutoSave = () => {
+            if (autoSaveTimer) clearTimeout(autoSaveTimer);
+            const scheduledFor = this.selectedId;
+            autoSaveTimer = setTimeout(() => {
+                autoSaveTimer = null;
+                if (this.selectedId !== scheduledFor) return;
+                if (this.saveStatus === 'dirty') this.persist();
+            }, 600);
+        };
+        this.cancelAutoSave = () => {
+            if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null; }
+        };
 
         window.addEventListener('keydown', (e) => {
             const meta = e.ctrlKey || e.metaKey;
