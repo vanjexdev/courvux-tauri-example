@@ -73,13 +73,33 @@ struct AppConfig {
     /// explicit Ctrl+S. New notes always start `unsaved` regardless.
     #[serde(rename = "autoSave", default = "default_auto_save")]
     auto_save: bool,
+    /// Most-recently-opened project folders, newest first. Capped at
+    /// `MAX_RECENT_PROJECTS` entries; entries that no longer exist on
+    /// disk are pruned lazily when the frontend asks for the list.
+    #[serde(rename = "recentProjects", default)]
+    recent_projects: Vec<String>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { notes_dir: None, auto_save: true }
+        Self { notes_dir: None, auto_save: true, recent_projects: Vec::new() }
     }
 }
+
+const MAX_RECENT_PROJECTS: usize = 10;
+/// Hard cap on directory traversal so a misclick on `/` or a huge repo
+/// can't lock the UI thread for minutes. Hit the cap → tree is truncated
+/// and the frontend shows a soft warning.
+const TREE_FILE_CAP: u32 = 5000;
+/// Skip these directory names entirely — they're never useful to the
+/// notepad and tend to be massive (`node_modules`) or platform churn
+/// (`target`, `.git`, `dist`).
+const SKIPPED_DIR_NAMES: &[&str] = &[
+    ".git", ".svn", ".hg",
+    "node_modules", "target", "dist", "build",
+    ".next", ".cache", ".idea", ".vscode",
+    "__pycache__", ".pytest_cache",
+];
 
 fn default_auto_save() -> bool { true }
 
@@ -370,6 +390,196 @@ fn import_md_file(state: State<'_, AppState>, source: String) -> Result<NoteSumm
     fs::rename(&tmp_path, &path).map_err(|e| format!("rename: {}", e))?;
 
     Ok(NoteSummary { id, title, updated_at })
+}
+
+// ── Project mode ────────────────────────────────────────────────────────────
+//
+// The notepad has two top-level UI modes: "library" (the original flat
+// `<id>-<slug>.md` notes folder owned by the app) and "project" (an
+// arbitrary user-owned folder with subdirectories, .md files, and image
+// assets). Project mode edits files in place — no copying, no slug
+// rename, no YAML frontmatter — so a project folder stays usable in any
+// other editor / git repo / static-site generator.
+
+/// Classification of a project entry. The frontend uses this to pick the
+/// right icon, decide whether the entry is editable (only `Md`), and
+/// route image clicks to the preview modal.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum NodeKind {
+    Dir,
+    Md,
+    Image,
+    Other,
+}
+
+#[derive(Debug, Serialize)]
+struct TreeNode {
+    name: String,
+    /// Absolute path on disk. Frontend passes it back verbatim to the
+    /// read / write commands; we don't try to resolve relative paths
+    /// across calls.
+    path: String,
+    kind: NodeKind,
+    /// Present only on `Dir` nodes. Sorted: dirs first, then files,
+    /// each group alphabetic by lowercase name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    children: Option<Vec<TreeNode>>,
+    /// True if `TREE_FILE_CAP` was hit while walking this subtree —
+    /// the children list is incomplete. Set on whichever ancestor
+    /// hit the cap; consumers can show a "..." marker.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    truncated: bool,
+}
+
+fn classify(path: &Path) -> NodeKind {
+    if path.is_dir() { return NodeKind::Dir; }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "md" | "markdown" => NodeKind::Md,
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "webp" | "bmp" | "ico" | "avif" => NodeKind::Image,
+        _ => NodeKind::Other,
+    }
+}
+
+fn walk_tree(root: &Path, depth: u32, count: &mut u32) -> TreeNode {
+    let name = root.file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| root.display().to_string());
+    let path = root.display().to_string();
+
+    if !root.is_dir() {
+        *count += 1;
+        return TreeNode { name, path, kind: classify(root), children: None, truncated: false };
+    }
+
+    // Stop descending past depth cap; surface as truncated dir.
+    if depth >= 10 {
+        return TreeNode { name, path, kind: NodeKind::Dir, children: Some(Vec::new()), truncated: true };
+    }
+
+    let entries = match fs::read_dir(root) {
+        Ok(it) => it,
+        Err(_) => return TreeNode { name, path, kind: NodeKind::Dir, children: Some(Vec::new()), truncated: false },
+    };
+
+    let mut children: Vec<TreeNode> = Vec::new();
+    let mut truncated = false;
+    for entry in entries.flatten() {
+        if *count >= TREE_FILE_CAP { truncated = true; break; }
+        let entry_path = entry.path();
+        let entry_name = match entry_path.file_name().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // Hide dotfiles + the noisy directory denylist.
+        if entry_name.starts_with('.') { continue; }
+        if entry_path.is_dir() && SKIPPED_DIR_NAMES.contains(&entry_name.as_str()) { continue; }
+
+        let child = walk_tree(&entry_path, depth + 1, count);
+        if child.truncated { truncated = true; }
+        children.push(child);
+    }
+
+    // Dirs first, then files, alphabetical within each group.
+    children.sort_by(|a, b| {
+        let dir_a = matches!(a.kind, NodeKind::Dir);
+        let dir_b = matches!(b.kind, NodeKind::Dir);
+        match (dir_a, dir_b) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    TreeNode { name, path, kind: NodeKind::Dir, children: Some(children), truncated }
+}
+
+/// Validate a project root and remember it as the most-recently-opened
+/// project. Returns the canonicalized absolute path (so the frontend
+/// stores the same shape we put in `recent_projects`).
+#[tauri::command]
+fn open_project_folder(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("not a directory: {}", path));
+    }
+    let abs = p.canonicalize().unwrap_or(p);
+    let abs_str = abs.display().to_string();
+
+    // Allow the asset:// protocol to serve files from this folder so the
+    // markdown preview can render `![](images/foo.jpg)` style links.
+    // `allow_directory(_, true)` is recursive.
+    if let Err(err) = app.asset_protocol_scope().allow_directory(&abs, true) {
+        eprintln!("[notepad] asset scope grant failed for {}: {}", abs_str, err);
+    }
+
+    let cfg_path = state.inner.lock().unwrap().config_path.clone();
+    let mut cfg = load_config(&cfg_path);
+    cfg.recent_projects.retain(|r| r != &abs_str);
+    cfg.recent_projects.insert(0, abs_str.clone());
+    cfg.recent_projects.truncate(MAX_RECENT_PROJECTS);
+    save_config(&cfg_path, &cfg)?;
+
+    Ok(abs_str)
+}
+
+/// Recursively walk the project root and return its tree. Hidden files,
+/// the noisy denylist (`node_modules`, `target`, `.git`, …), and depth /
+/// file-count caps keep this safe to call on arbitrary user folders.
+#[tauri::command]
+fn list_project_tree(path: String) -> Result<TreeNode, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("not a directory: {}", path));
+    }
+    let mut count: u32 = 0;
+    Ok(walk_tree(&p, 0, &mut count))
+}
+
+#[tauri::command]
+fn read_project_file(path: String) -> Result<String, String> {
+    fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path, e))
+}
+
+/// Atomic in-place write — same tmp + fsync + rename pattern used for
+/// library notes, but no frontmatter wrapping. Project files keep
+/// whatever shape the user put on disk.
+#[tauri::command]
+fn write_project_file(path: String, content: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    let parent = p.parent().ok_or_else(|| format!("no parent dir: {}", path))?;
+    fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
+    let tmp = p.with_file_name(format!(
+        ".{}.tmp",
+        p.file_name().and_then(|s| s.to_str()).unwrap_or("file"),
+    ));
+    {
+        let mut f = fs::File::create(&tmp).map_err(|e| format!("create tmp: {}", e))?;
+        f.write_all(content.as_bytes()).map_err(|e| format!("write tmp: {}", e))?;
+        f.sync_all().map_err(|e| format!("fsync: {}", e))?;
+    }
+    fs::rename(&tmp, &p).map_err(|e| format!("rename: {}", e))?;
+    Ok(())
+}
+
+/// Return the cached recent-projects list, lazily pruning entries whose
+/// folders have been deleted / renamed since they were last opened.
+#[tauri::command]
+fn get_recent_projects(state: State<'_, AppState>) -> Vec<String> {
+    let cfg_path = state.inner.lock().unwrap().config_path.clone();
+    let mut cfg = load_config(&cfg_path);
+    let before = cfg.recent_projects.len();
+    cfg.recent_projects.retain(|p| PathBuf::from(p).is_dir());
+    if cfg.recent_projects.len() != before {
+        let _ = save_config(&cfg_path, &cfg);
+    }
+    cfg.recent_projects
 }
 
 /// Drain and return the .md paths the OS asked us to open at launch
@@ -672,8 +882,12 @@ pub fn run() {
             // accel), Export PDF uses Ctrl+Shift+P instead.
             let new_item = MenuItemBuilder::with_id("new", "New Note")
                 .accelerator("CmdOrCtrl+N").build(app)?;
-            let open_item = MenuItemBuilder::with_id("open", "Open\u{2026}")
+            let open_item = MenuItemBuilder::with_id("open", "Open File\u{2026}")
                 .accelerator("CmdOrCtrl+O").build(app)?;
+            let open_folder_item = MenuItemBuilder::with_id("open_folder", "Open Folder\u{2026}")
+                .accelerator("CmdOrCtrl+Shift+O").build(app)?;
+            let close_project_item = MenuItemBuilder::with_id("close_project", "Close Project")
+                .accelerator("CmdOrCtrl+Shift+W").build(app)?;
             let save_item = MenuItemBuilder::with_id("save", "Save")
                 .accelerator("CmdOrCtrl+S").build(app)?;
             let save_as_item = MenuItemBuilder::with_id("save_as", "Save As\u{2026}")
@@ -685,6 +899,8 @@ pub fn run() {
             let file_menu = SubmenuBuilder::new(app, "File")
                 .item(&new_item)
                 .item(&open_item)
+                .item(&open_folder_item)
+                .item(&close_project_item)
                 .separator()
                 .item(&save_item)
                 .item(&save_as_item)
@@ -713,7 +929,11 @@ pub fn run() {
 
             app.on_menu_event(|app, event| {
                 let id = event.id().as_ref();
-                if matches!(id, "new" | "open" | "save" | "save_as" | "export_pdf") {
+                if matches!(
+                    id,
+                    "new" | "open" | "open_folder" | "close_project"
+                        | "save" | "save_as" | "export_pdf"
+                ) {
                     if let Err(err) = app.emit("menu", id) {
                         eprintln!("[notepad] emit menu event failed: {}", err);
                     }
@@ -736,6 +956,11 @@ pub fn run() {
             import_md_file,
             export_md_file,
             take_pending_open_files,
+            open_project_folder,
+            list_project_tree,
+            read_project_file,
+            write_project_file,
+            get_recent_projects,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -8,7 +8,10 @@ import {
     notesDir, defaultNotesDir, setNotesDir, resetNotesDir,
     getAutoSave, setAutoSave,
     importMd, exportMd, takePendingOpenFiles,
+    openProjectFolder, listProjectTree, readProjectFile, writeProjectFile,
+    getRecentProjects,
 } from './tauri.js';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import { renderMarkdown } from './markdown.js';
 import { ICONS } from './icons.js';
 // Vite bundles the asset and gives us a hashed URL; the bundled webview
@@ -31,6 +34,8 @@ import { version as APP_VERSION } from '../package.json';
 const SIDEBAR_WIDTH_KEY = 'courvux-notepad:sidebar-width';
 const SIDEBAR_OPEN_KEY  = 'courvux-notepad:sidebar-open';
 const VIEW_MODE_KEY     = 'courvux-notepad:view-mode';
+const APP_MODE_KEY      = 'courvux-notepad:app-mode';      // 'library' | 'project'
+const LAST_PROJECT_KEY  = 'courvux-notepad:last-project';  // path to reopen on launch
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 480;
@@ -45,11 +50,14 @@ createApp({
                 class="shrink-0 border-r border-zinc-800 bg-zinc-900/60 backdrop-blur flex flex-col relative">
 
                 <header class="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-2">
-                    <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate inline-flex items-center gap-2">
+                    <h1 class="text-sm font-semibold tracking-wide text-zinc-300 truncate inline-flex items-center gap-2 min-w-0">
                         <img :src="logoUrl" alt="" width="20" height="20" class="shrink-0" aria-hidden="true" />
-                        <span>Notepad</span>
+                        <span cv-if="mode === 'library'">Notepad</span>
+                        <span cv-else
+                              :title="project?.path"
+                              class="truncate">{{ project?.name || 'Project' }}</span>
                     </h1>
-                    <div class="flex items-center gap-1">
+                    <div class="flex items-center gap-1 shrink-0">
                         <button
                             @click="aboutOpen = true"
                             class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
@@ -65,6 +73,15 @@ createApp({
                             <span cv-html.raw="icons.settings" aria-hidden="true"></span>
                         </button>
                         <button
+                            cv-if="mode === 'project'"
+                            @click="refreshTree()"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            aria-label="Refresh project tree"
+                            title="Refresh tree">
+                            <span cv-html.raw="icons.folderTree" aria-hidden="true"></span>
+                        </button>
+                        <button
+                            cv-if="mode === 'library'"
                             @click="newNote()"
                             class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white inline-flex items-center gap-1"
                             title="New note (Ctrl+N)">
@@ -74,62 +91,99 @@ createApp({
                     </div>
                 </header>
 
-                <!-- Title-only search. Body search would force loading
-                     every .md from disk on each keystroke (against the
-                     lazy-load pattern); leaving that for a future
-                     "advanced search" command that can hit Rust directly. -->
-                <div class="px-3 py-2 border-b border-zinc-800">
-                    <div class="relative">
-                        <span cv-html.raw="icons.search"
-                              aria-hidden="true"
-                              class="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none"></span>
-                        <input
-                            type="search"
-                            cv-model="searchQuery"
-                            placeholder="Search notes…"
-                            aria-label="Filter notes by title"
-                            class="w-full pl-7 pr-7 py-1.5 text-xs rounded bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/60" />
-                        <button
-                            cv-if="searchQuery"
-                            @click="searchQuery = ''"
-                            class="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-100"
-                            aria-label="Clear search">
-                            <span cv-html.raw="icons.x" aria-hidden="true"></span>
-                        </button>
+                <!-- ── Library sidebar body ─────────────────────────── -->
+                <div cv-if="mode === 'library'" class="flex-1 flex flex-col min-h-0">
+                    <!-- Title-only search. Body search would force loading
+                         every .md from disk on each keystroke (against the
+                         lazy-load pattern); leaving that for a future
+                         "advanced search" command that can hit Rust directly. -->
+                    <div class="px-3 py-2 border-b border-zinc-800">
+                        <div class="relative">
+                            <span cv-html.raw="icons.search"
+                                  aria-hidden="true"
+                                  class="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none"></span>
+                            <input
+                                type="search"
+                                cv-model="searchQuery"
+                                placeholder="Search notes…"
+                                aria-label="Filter notes by title"
+                                class="w-full pl-7 pr-7 py-1.5 text-xs rounded bg-zinc-950 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500/60" />
+                            <button
+                                cv-if="searchQuery"
+                                @click="searchQuery = ''"
+                                class="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-100"
+                                aria-label="Clear search">
+                                <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                            </button>
+                        </div>
                     </div>
+
+                    <ul class="flex-1 overflow-y-auto py-2">
+                        <li cv-if="notes.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
+                            No notes yet. Click <span class="text-emerald-400">+ New</span> to create one.
+                        </li>
+                        <li cv-else-if="filteredNotes.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
+                            No notes match "<span class="text-zinc-300">{{ searchQuery }}</span>".
+                        </li>
+                        <li cv-for="note in filteredNotes"
+                            :key="note.id"
+                            @click="select(note.id)"
+                            :class="note.id === selectedId
+                                ? 'bg-emerald-500/10 border-l-2 border-emerald-500'
+                                : 'border-l-2 border-transparent hover:bg-zinc-800/50'"
+                            class="px-4 py-2 cursor-pointer">
+                            <div class="text-sm font-medium truncate flex items-center gap-1.5">
+                                <span cv-if="note.id === selectedId && saveStatus !== 'saved'"
+                                      class="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                                      :class="saveStatus === 'unsaved' ? 'bg-amber-500' : 'bg-blue-400'"
+                                      :title="saveStatus"></span>
+                                <span class="truncate">{{ note.title.trim() || 'Untitled' }}</span>
+                            </div>
+                            <div class="text-xs text-zinc-500 truncate mt-0.5">
+                                {{ formatDate(note.updatedAt) }}
+                            </div>
+                        </li>
+                    </ul>
+
+                    <footer class="px-4 py-2 border-t border-zinc-800 text-[10px] text-zinc-600 truncate"
+                            :title="storageDir">
+                        {{ storageDir || 'Loading…' }}
+                    </footer>
                 </div>
 
-                <ul class="flex-1 overflow-y-auto py-2">
-                    <li cv-if="notes.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
-                        No notes yet. Click <span class="text-emerald-400">+ New</span> to create one.
-                    </li>
-                    <li cv-else-if="filteredNotes.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
-                        No notes match "<span class="text-zinc-300">{{ searchQuery }}</span>".
-                    </li>
-                    <li cv-for="note in filteredNotes"
-                        :key="note.id"
-                        @click="select(note.id)"
-                        :class="note.id === selectedId
-                            ? 'bg-emerald-500/10 border-l-2 border-emerald-500'
-                            : 'border-l-2 border-transparent hover:bg-zinc-800/50'"
-                        class="px-4 py-2 cursor-pointer">
-                        <div class="text-sm font-medium truncate flex items-center gap-1.5">
-                            <span cv-if="note.id === selectedId && saveStatus !== 'saved'"
-                                  class="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                                  :class="saveStatus === 'unsaved' ? 'bg-amber-500' : 'bg-blue-400'"
-                                  :title="saveStatus"></span>
-                            <span class="truncate">{{ note.title.trim() || 'Untitled' }}</span>
-                        </div>
-                        <div class="text-xs text-zinc-500 truncate mt-0.5">
-                            {{ formatDate(note.updatedAt) }}
-                        </div>
-                    </li>
-                </ul>
+                <!-- ── Project sidebar body ─────────────────────────── -->
+                <div cv-else class="flex-1 flex flex-col min-h-0">
+                    <ul class="flex-1 overflow-y-auto py-2">
+                        <li cv-if="flatTree.length === 0" class="px-4 py-6 text-xs text-zinc-500 text-center">
+                            Empty folder.
+                        </li>
+                        <li cv-for="node in flatTree"
+                            :key="node.path"
+                            @click="onTreeClick(node)"
+                            :class="(openFile && openFile.path === node.path)
+                                ? 'bg-emerald-500/10 border-l-2 border-emerald-500'
+                                : 'border-l-2 border-transparent hover:bg-zinc-800/50'"
+                            :style="'padding-left:' + (node.depth * 12 + 12) + 'px'"
+                            class="pr-3 py-1 cursor-pointer text-xs flex items-center gap-1.5 select-none">
+                            <span cv-if="node.isDir"
+                                  cv-html.raw="node.isExpanded ? icons.chevronDown : icons.chevronRight"
+                                  class="shrink-0 text-zinc-500"></span>
+                            <span cv-else class="w-3 shrink-0" aria-hidden="true"></span>
+                            <span cv-if="node.isDir && node.isExpanded" cv-html.raw="icons.folderOpen" class="shrink-0 text-amber-500/80"></span>
+                            <span cv-else-if="node.isDir" cv-html.raw="icons.folder" class="shrink-0 text-amber-500/80"></span>
+                            <span cv-else-if="node.kind === 'md'" cv-html.raw="icons.file" class="shrink-0 text-zinc-400"></span>
+                            <span cv-else-if="node.kind === 'image'" cv-html.raw="icons.image" class="shrink-0 text-blue-400"></span>
+                            <span cv-else cv-html.raw="icons.file" class="shrink-0 text-zinc-600"></span>
+                            <span :class="node.kind === 'other' ? 'text-zinc-500' : 'text-zinc-200'" class="truncate">{{ node.name }}</span>
+                            <span cv-if="node.truncated" class="text-[10px] text-amber-500" title="Truncated (depth or file cap)">…</span>
+                        </li>
+                    </ul>
 
-                <footer class="px-4 py-2 border-t border-zinc-800 text-[10px] text-zinc-600 truncate"
-                        :title="storageDir">
-                    {{ storageDir || 'Loading…' }}
-                </footer>
+                    <footer class="px-4 py-2 border-t border-zinc-800 text-[10px] text-zinc-600 truncate"
+                            :title="project?.path">
+                        {{ project?.path || '' }}
+                    </footer>
+                </div>
 
                 <!-- Drag handle on the right edge to resize the sidebar.
                      Hidden from the a11y tree because there's no keyboard
@@ -145,8 +199,8 @@ createApp({
 
             <!-- ── Editor ──────────────────────────────────────────────── -->
             <main class="flex-1 flex flex-col bg-zinc-950 min-w-0">
-                <!-- Toolbar with the sidebar toggle is always shown so the user can re-open the sidebar. -->
-                <div cv-if="!selected" class="flex-1 flex flex-col">
+                <!-- ── Library: empty state ─────────────────────────── -->
+                <div cv-if="mode === 'library' && !selected" class="flex-1 flex flex-col">
                     <header class="px-4 py-3 border-b border-zinc-800 flex items-center gap-2">
                         <button
                             @click="toggleSidebar()"
@@ -157,18 +211,44 @@ createApp({
                             <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
                         </button>
                     </header>
-                    <div class="flex-1 flex items-center justify-center text-zinc-600">
-                        <div class="text-center">
+                    <div class="flex-1 flex items-center justify-center text-zinc-600 px-6 py-8 overflow-y-auto">
+                        <div class="text-center max-w-md">
                             <div class="mb-4 inline-flex p-4 rounded-full bg-zinc-900 text-zinc-700">
                                 <span cv-html.raw="iconsLg.file"></span>
                             </div>
                             <p class="text-sm">Select a note from the sidebar, or create a new one.</p>
                             <p class="text-xs mt-2 text-zinc-700">Ctrl+N · new · Ctrl+S · save · Ctrl+P · cycle view · Ctrl+B · toggle sidebar</p>
+
+                            <div cv-if="recentProjects.length > 0" class="mt-8 text-left">
+                                <div class="flex items-center gap-2 mb-2">
+                                    <span cv-html.raw="icons.folderTree" class="text-zinc-600"></span>
+                                    <h3 class="text-xs font-semibold text-zinc-500 uppercase tracking-wider">Recent projects</h3>
+                                </div>
+                                <ul class="space-y-1">
+                                    <li cv-for="path in recentProjects"
+                                        :key="path"
+                                        @click="openRecentProject(path)"
+                                        class="px-3 py-2 rounded bg-zinc-900/60 hover:bg-zinc-800 cursor-pointer text-xs text-zinc-300 truncate"
+                                        :title="path">
+                                        {{ path }}
+                                    </li>
+                                </ul>
+                            </div>
+
+                            <div class="mt-6">
+                                <button
+                                    @click="openFolder()"
+                                    class="px-3 py-2 text-xs rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800 inline-flex items-center gap-1.5">
+                                    <span cv-html.raw="icons.folderOpen"></span>
+                                    <span>Open folder…</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                <div cv-else class="flex-1 flex flex-col min-h-0">
+                <!-- ── Library: editor ──────────────────────────────── -->
+                <div cv-else-if="mode === 'library' && selected" class="flex-1 flex flex-col min-h-0">
                     <header class="px-4 py-3 border-b border-zinc-800 flex items-center gap-3">
                         <button
                             @click="toggleSidebar()"
@@ -230,6 +310,82 @@ createApp({
 
                     <footer class="px-6 py-2 border-t border-zinc-800 text-xs text-zinc-500 flex items-center justify-between">
                         <span>{{ wordCount }} words · {{ charCount }} chars · id {{ selected.id }}</span>
+                        <span :class="statusColor">{{ statusLabel }}</span>
+                    </footer>
+                </div>
+
+                <!-- ── Project: empty state (no file selected) ──────── -->
+                <div cv-else-if="mode === 'project' && !openFile" class="flex-1 flex flex-col">
+                    <header class="px-4 py-3 border-b border-zinc-800 flex items-center gap-2">
+                        <button
+                            @click="toggleSidebar()"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :title="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'">
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
+                        </button>
+                    </header>
+                    <div class="flex-1 flex items-center justify-center text-zinc-600">
+                        <div class="text-center">
+                            <div class="mb-4 inline-flex p-4 rounded-full bg-zinc-900 text-zinc-700">
+                                <span cv-html.raw="iconsLg.folderTree"></span>
+                            </div>
+                            <p class="text-sm">Pick a Markdown or image file from the tree.</p>
+                            <p class="text-xs mt-2 text-zinc-700">Ctrl+Shift+O · open folder · Ctrl+Shift+W · close project</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Project: markdown editor ─────────────────────── -->
+                <div cv-else-if="mode === 'project' && openFile && openFile.kind === 'md'"
+                     class="flex-1 flex flex-col min-h-0">
+                    <header class="px-4 py-3 border-b border-zinc-800 flex items-center gap-3">
+                        <button
+                            @click="toggleSidebar()"
+                            class="p-1.5 rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                            :title="sidebarOpen ? 'Hide sidebar' : 'Show sidebar'">
+                            <span cv-html.raw="sidebarOpen ? icons.sidebarClose : icons.sidebarOpen" aria-hidden="true"></span>
+                        </button>
+
+                        <div class="flex-1 min-w-0">
+                            <div class="text-lg font-semibold text-zinc-100 truncate">{{ openFile.name }}</div>
+                            <div class="text-[10px] text-zinc-600 truncate" :title="openFile.path">{{ openFile.path }}</div>
+                        </div>
+
+                        <button
+                            @click="cycleView()"
+                            class="px-2 py-1 text-xs rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-800 inline-flex items-center gap-1.5"
+                            :title="'View: ' + viewMode + ' (Ctrl+P)'">
+                            <span cv-html.raw="viewMode === 'edit' ? icons.edit : viewMode === 'split' ? icons.split : icons.eye"></span>
+                            <span class="capitalize">{{ viewMode }}</span>
+                        </button>
+
+                        <button
+                            @click="forceSave()"
+                            :disabled="projectSaveStatus === 'saved' || projectSaveStatus === 'saving'"
+                            class="px-2 py-1 text-xs rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-30 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                            title="Save (Ctrl+S)">
+                            <span cv-html.raw="projectSaveStatus === 'saved' ? icons.check : icons.save"></span>
+                            <span>{{ projectSaveStatus === 'saved' ? 'Saved' : 'Save' }}</span>
+                        </button>
+                    </header>
+
+                    <div class="flex-1 flex min-h-0">
+                        <textarea
+                            cv-show="viewMode === 'edit' || viewMode === 'split'"
+                            cv-model="openFile.content"
+                            @input="onEdit()"
+                            :class="viewMode === 'split' ? 'w-1/2 border-r border-zinc-800' : 'flex-1'"
+                            class="px-6 py-4 bg-transparent text-zinc-200 outline-none resize-none placeholder:text-zinc-600 leading-relaxed font-mono text-sm"></textarea>
+
+                        <div
+                            cv-show="viewMode === 'preview' || viewMode === 'split'"
+                            :class="viewMode === 'split' ? 'w-1/2' : 'flex-1'"
+                            class="px-6 py-4 overflow-y-auto markdown-body"
+                            cv-html="renderedBody"></div>
+                    </div>
+
+                    <footer class="px-6 py-2 border-t border-zinc-800 text-xs text-zinc-500 flex items-center justify-between">
+                        <span>{{ wordCount }} words · {{ charCount }} chars</span>
                         <span :class="statusColor">{{ statusLabel }}</span>
                     </footer>
                 </div>
@@ -350,6 +506,26 @@ createApp({
                 </div>
             </div>
 
+            <!-- ── Image preview modal ─────────────────────────────────── -->
+            <div cv-if="imagePreview"
+                 @click.self="imagePreview = null"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-label="Image preview"
+                 class="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6">
+                <div class="relative max-w-full max-h-full">
+                    <button
+                        @click="imagePreview = null"
+                        class="absolute -top-2 -right-2 w-7 h-7 rounded-full bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 inline-flex items-center justify-center"
+                        aria-label="Close preview">
+                        <span cv-html.raw="icons.x" aria-hidden="true"></span>
+                    </button>
+                    <img :src="imagePreview.src" :alt="imagePreview.alt"
+                         class="max-w-[90vw] max-h-[85vh] rounded shadow-xl object-contain bg-zinc-900" />
+                    <div class="mt-2 text-center text-xs text-zinc-500 truncate" :title="imagePreview.alt">{{ imagePreview.alt }}</div>
+                </div>
+            </div>
+
             <!-- ── About modal ─────────────────────────────────────────── -->
             <div cv-if="aboutOpen"
                  @click.self="aboutOpen = false"
@@ -402,6 +578,28 @@ createApp({
         </div>
     `,
     data: {
+        // ── Top-level mode ────────────────────────────────────────────────
+        // 'library' = the original flat notes folder (frontmatter, slug
+        //             filenames, owned by the app).
+        // 'project' = an arbitrary user folder edited in place.
+        // Switched via the File menu (Open Folder / Close Project) and
+        // by the recent-projects pane on the welcome screen.
+        mode: 'library',
+
+        // Project mode state. `tree` is the recursive directory layout
+        // returned by `list_project_tree`; `expanded` records which dirs
+        // the user opened so the sidebar tree can render lazily flat.
+        // `openFile` is the current editor target (md or image preview).
+        project: null,           // { path, name, tree }
+        expanded: {},            // { [absolutePath]: true } per dir node
+        openFile: null,          // { path, name, content, kind: 'md'|'image' }
+        projectSaveStatus: 'saved',
+        recentProjects: [],
+        // Image preview modal. Set when the user clicks an image entry
+        // in the project tree (or an inline image inside the preview).
+        imagePreview: null,      // { src, alt }
+
+        // ── Library mode state (unchanged) ────────────────────────────────
         notes: [],
         selectedId: null,
         saveStatus: 'saved',
@@ -446,6 +644,34 @@ createApp({
         logoUrl,
     },
     computed: {
+        // Depth-first flatten of the project tree, only descending into
+        // dirs that are currently expanded. Each entry carries its visual
+        // depth so the template can render a flat <ul> with padding-left
+        // proportional to nesting — keeps the template free of recursion.
+        flatTree() {
+            const root = this.project?.tree;
+            if (!root || root.kind !== 'dir' || !root.children) return [];
+            const out = [];
+            const expanded = this.expanded;
+            const walk = (node, depth) => {
+                const isDir = node.kind === 'dir';
+                const isExpanded = isDir && !!expanded[node.path];
+                out.push({
+                    name: node.name,
+                    path: node.path,
+                    kind: node.kind,
+                    depth,
+                    isDir,
+                    isExpanded,
+                    truncated: !!node.truncated,
+                });
+                if (isDir && isExpanded && node.children) {
+                    for (const c of node.children) walk(c, depth + 1);
+                }
+            };
+            for (const c of root.children) walk(c, 0);
+            return out;
+        },
         sortedNotes() {
             return [...this.notes].sort((a, b) => b.updatedAt - a.updatedAt);
         },
@@ -469,17 +695,34 @@ createApp({
             return this.notes.find(n => n.id === this.selectedId) ?? null;
         },
         renderedBody() {
-            return renderMarkdown(this.selected?.body ?? '');
+            // Library notes have no associated folder for relative image
+            // paths. Project files render with the project root as the
+            // base so `![alt](images/foo.jpg)` resolves to an
+            // `asset://` URL pointing into the project.
+            if (this.mode === 'project' && this.openFile?.kind === 'md') {
+                return renderMarkdown(this.openFile.content ?? '', this.project?.path ?? null);
+            }
+            return renderMarkdown(this.selected?.body ?? '', null);
+        },
+        // Save status the editor footer / Save button bind to. Lets one
+        // header chrome serve both modes without duplicating bindings.
+        currentSaveStatus() {
+            return this.mode === 'project' ? this.projectSaveStatus : this.saveStatus;
+        },
+        // Word + char counts — switch source based on mode.
+        currentBody() {
+            if (this.mode === 'project') return this.openFile?.content ?? '';
+            return this.selected?.body ?? '';
         },
         wordCount() {
-            const body = this.selected?.body ?? '';
+            const body = this.currentBody;
             return body.trim() ? body.trim().split(/\s+/).length : 0;
         },
         charCount() {
-            return this.selected?.body?.length ?? 0;
+            return this.currentBody.length;
         },
         statusLabel() {
-            switch (this.saveStatus) {
+            switch (this.currentSaveStatus) {
                 case 'unsaved': return '○ Unsaved (Ctrl+S)';
                 case 'dirty':   return '● Auto-saving…';
                 case 'saving':  return '● Saving…';
@@ -488,7 +731,7 @@ createApp({
             }
         },
         statusColor() {
-            switch (this.saveStatus) {
+            switch (this.currentSaveStatus) {
                 case 'unsaved': return 'text-amber-400';
                 case 'dirty':   return 'text-blue-400';
                 case 'saving':  return 'text-blue-400';
@@ -562,6 +805,12 @@ createApp({
         },
 
         onEdit() {
+            if (this.mode === 'project') {
+                if (this.projectSaveStatus === 'unsaved') return;
+                this.projectSaveStatus = 'dirty';
+                if (this.autoSaveEnabled) this.scheduleAutoSave();
+                return;
+            }
             if (this.saveStatus === 'unsaved') return;
             this.saveStatus = 'dirty';
             // Skip the debounce when the user has disabled auto-save —
@@ -584,6 +833,20 @@ createApp({
         },
 
         async persist() {
+            if (this.mode === 'project') {
+                const f = this.openFile;
+                if (!f || f.kind !== 'md') return;
+                this.projectSaveStatus = 'saving';
+                try {
+                    await writeProjectFile(f.path, f.content);
+                    this.projectSaveStatus = 'saved';
+                } catch (err) {
+                    console.error('[notepad] project save failed:', err);
+                    this.projectSaveStatus = 'dirty';
+                    alert('Save failed: ' + err);
+                }
+                return;
+            }
             const note = this.selected;
             if (!note) return;
             this.saveStatus = 'saving';
@@ -723,6 +986,123 @@ createApp({
             }
         },
 
+        // ── Project mode ──────────────────────────────────────────────────
+        // Opens an arbitrary folder and edits its `.md` files in place
+        // (no slug rename, no YAML frontmatter). Image files surface in
+        // the tree and render via the asset:// protocol.
+
+        async openFolder() {
+            const picked = await openDialog({
+                directory: true,
+                multiple: false,
+                title: 'Open project folder',
+            });
+            if (!picked) return;
+            await this.activateProject(picked);
+        },
+
+        async openRecentProject(path) {
+            await this.activateProject(path);
+        },
+
+        // Single entry point for switching into project mode. Validates
+        // the path on the Rust side, asks the asset protocol scope to
+        // serve files from it, walks the tree, and resets the editor.
+        async activateProject(path) {
+            try {
+                const resolved = await openProjectFolder(path);
+                const tree = await listProjectTree(resolved);
+                this.project = {
+                    path: resolved,
+                    name: tree.name,
+                    tree,
+                };
+                this.mode = 'project';
+                this.expanded = {};
+                this.openFile = null;
+                this.projectSaveStatus = 'saved';
+                this.recentProjects = await getRecentProjects();
+                try {
+                    localStorage.setItem(APP_MODE_KEY, 'project');
+                    localStorage.setItem(LAST_PROJECT_KEY, resolved);
+                } catch {}
+                // Cancel any pending library autosave so it can't fire
+                // against the now-irrelevant `selected` note.
+                this.cancelAutoSave?.();
+            } catch (err) {
+                console.error('[notepad] open project failed:', err);
+                alert('Could not open project: ' + err);
+            }
+        },
+
+        async closeProject() {
+            if (this.projectSaveStatus === 'unsaved' || this.projectSaveStatus === 'dirty') {
+                if (!confirm('You have unsaved changes in this project. Close anyway?')) return;
+            }
+            this.cancelAutoSave?.();
+            this.project = null;
+            this.openFile = null;
+            this.expanded = {};
+            this.projectSaveStatus = 'saved';
+            this.mode = 'library';
+            try {
+                localStorage.setItem(APP_MODE_KEY, 'library');
+                localStorage.removeItem(LAST_PROJECT_KEY);
+            } catch {}
+        },
+
+        async refreshTree() {
+            if (!this.project) return;
+            try {
+                const tree = await listProjectTree(this.project.path);
+                this.project = { ...this.project, tree };
+            } catch (err) {
+                console.error('[notepad] refresh tree failed:', err);
+            }
+        },
+
+        async onTreeClick(node) {
+            if (node.isDir) {
+                // Toggle expand. Use object spread to keep the reactivity
+                // notification (Courvux watches assignment, not deep keys).
+                const next = { ...this.expanded };
+                if (next[node.path]) delete next[node.path];
+                else next[node.path] = true;
+                this.expanded = next;
+                return;
+            }
+            if (node.kind === 'image') {
+                this.imagePreview = {
+                    src: convertFileSrc(node.path),
+                    alt: node.name,
+                };
+                return;
+            }
+            if (node.kind === 'md') {
+                if (this.projectSaveStatus === 'unsaved' || this.projectSaveStatus === 'dirty') {
+                    if (!confirm('You have unsaved changes. Switch anyway?')) return;
+                }
+                this.cancelAutoSave?.();
+                try {
+                    const content = await readProjectFile(node.path);
+                    this.openFile = {
+                        path: node.path,
+                        name: node.name,
+                        content,
+                        kind: 'md',
+                    };
+                    this.projectSaveStatus = 'saved';
+                } catch (err) {
+                    console.error('[notepad] read project file failed:', err);
+                    alert('Could not open file: ' + err);
+                }
+                return;
+            }
+            // 'other' kind — non-editable. Surface a soft hint instead
+            // of silently swallowing the click.
+            alert(`"${node.name}" is not a Markdown or image file. Open it in your preferred editor.`);
+        },
+
         // ── File-menu handlers ────────────────────────────────────────────
         // The native menu (built in src-tauri/src/lib.rs `setup`) emits
         // `menu` events with the item id; we route each one to the matching
@@ -860,6 +1240,21 @@ createApp({
             console.error('[notepad] startup load failed:', err);
         }
 
+        // Recent projects + last-project resumption. We always load the
+        // recent list (the welcome screen displays it), but only auto-
+        // reopen when the user was last in project mode AND the path is
+        // still in the recent list (Rust prunes deleted dirs lazily).
+        try {
+            this.recentProjects = await getRecentProjects();
+            const wasProject = (() => { try { return localStorage.getItem(APP_MODE_KEY) === 'project'; } catch { return false; } })();
+            const lastPath   = (() => { try { return localStorage.getItem(LAST_PROJECT_KEY); } catch { return null; } })();
+            if (wasProject && lastPath && this.recentProjects.includes(lastPath)) {
+                await this.activateProject(lastPath);
+            }
+        } catch (err) {
+            console.error('[notepad] recent projects load failed:', err);
+        }
+
         // Cancelable debounced autosave. The closure-captured `timer` lets
         // both onEdit() (resets) and select() (cancels on note switch) reach
         // it without it leaking into reactive state. We also snapshot
@@ -871,11 +1266,22 @@ createApp({
         let autoSaveTimer = null;
         this.scheduleAutoSave = () => {
             if (autoSaveTimer) clearTimeout(autoSaveTimer);
-            const scheduledFor = this.selectedId;
+            // Snapshot whichever identity matters for the current mode so
+            // a switch (note → note in library, file → file in project,
+            // or library ↔ project) cancels the pending write.
+            const scheduledMode = this.mode;
+            const scheduledKey = scheduledMode === 'project'
+                ? this.openFile?.path ?? null
+                : this.selectedId;
             autoSaveTimer = setTimeout(() => {
                 autoSaveTimer = null;
-                if (this.selectedId !== scheduledFor) return;
-                if (this.saveStatus === 'dirty') this.persist();
+                if (this.mode !== scheduledMode) return;
+                const currentKey = scheduledMode === 'project'
+                    ? this.openFile?.path ?? null
+                    : this.selectedId;
+                if (currentKey !== scheduledKey) return;
+                const status = scheduledMode === 'project' ? this.projectSaveStatus : this.saveStatus;
+                if (status === 'dirty') this.persist();
             }, 600);
         };
         this.cancelAutoSave = () => {
@@ -911,11 +1317,13 @@ createApp({
         // (window close tears it down).
         listen('menu', async (e) => {
             switch (e.payload) {
-                case 'new':        this.newNote();        break;
-                case 'open':       await this.openMd();   break;
-                case 'save':       await this.forceSave(); break;
-                case 'save_as':    await this.saveAs();    break;
-                case 'export_pdf': await this.exportPdf(); break;
+                case 'new':           this.newNote();             break;
+                case 'open':          await this.openMd();        break;
+                case 'open_folder':   await this.openFolder();    break;
+                case 'close_project': await this.closeProject();  break;
+                case 'save':          await this.forceSave();     break;
+                case 'save_as':       await this.saveAs();        break;
+                case 'export_pdf':    await this.exportPdf();     break;
             }
         }).catch(err => console.error('[notepad] menu listener failed:', err));
 
@@ -923,6 +1331,7 @@ createApp({
             // Esc closes whichever modal is open. Cheap escape hatch when
             // the user reaches for the X with the keyboard.
             if (e.key === 'Escape') {
+                if (this.imagePreview) { this.imagePreview = null;  return; }
                 if (this.settingsOpen) { this.settingsOpen = false; return; }
                 if (this.aboutOpen)    { this.aboutOpen = false;    return; }
             }
