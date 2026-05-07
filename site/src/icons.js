@@ -1,3 +1,16 @@
+/**
+ * Static SVG strings for Lucide icons used throughout the app.
+ *
+ * SECURITY NOTE: These strings are emitted via `cv-html.raw="icons.X"` in
+ * templates, which bypasses the default sanitizer added in Courvux 0.6.0.
+ * The strings here are TRUSTED because they originate from this module
+ * and are not user-controllable. Do NOT add icons sourced from user input,
+ * external APIs, or any data that might cross a trust boundary.
+ *
+ * If you need to render user-provided HTML, use `cv-html` (sanitized by
+ * default) instead of `cv-html.raw`.
+ */
+
 // Static SVG strings for the lucide icons the landing uses. Same
 // helper pattern as the app — keeps the bundle tight (only the icons
 // we actually render ship) and dodges runtime tag construction.
