@@ -1,10 +1,33 @@
 import { createApp } from 'courvux';
 import './style.css';
 import { ICONS, ICONS_LG } from './icons.js';
+
+// Per-OS brand glyphs come in from svgrepo as plain black SVGs at
+// 800×800. Inline them so we can swap the hardcoded `#000000` to
+// `currentColor` (the install card's text class controls tint) and
+// shrink the intrinsic size to 20px so they sit alongside the H3
+// without overflowing.
+import linuxSvgRaw   from './assets/linux.svg?raw';
+import macosSvgRaw   from './assets/macos.svg?raw';
+import windowsSvgRaw from './assets/windows.svg?raw';
+
+function tintSvg(svg) {
+    return svg
+        .replace(/fill="#000000"/g,   'fill="currentColor"')
+        .replace(/stroke="#000000"/g, 'stroke="currentColor"')
+        .replace(/width="[^"]+"/,  'width="20"')
+        .replace(/height="[^"]+"/, 'height="20"');
+}
+
+const OS_ICONS = {
+    linux:   tintSvg(linuxSvgRaw),
+    macos:   tintSvg(macosSvgRaw),
+    windows: tintSvg(windowsSvgRaw),
+};
 // Repo + release URLs centralized so renaming or moving the project
 // is a one-spot update.
 const REPO = 'https://github.com/vanjexdev/courvux-tauri-example';
-const VERSION = '0.9.3';
+const VERSION = '0.9.4';
 const RELEASE = `${REPO}/releases/tag/v${VERSION}`;
 
 createApp({
@@ -230,18 +253,23 @@ createApp({ ... }).mount(<span class="text-emerald-300">'#app'</span>);</pre>
                         <div class="grid gap-5 md:grid-cols-3">
                             <article cv-for="p in platforms" :key="p.name"
                                      class="p-5 rounded-lg bg-zinc-900/40 border border-zinc-800 flex flex-col">
-                                <header class="flex items-center justify-between mb-4">
-                                    <h3 class="text-zinc-100 font-semibold">{{ p.name }}</h3>
-                                    <span class="text-[10px] text-zinc-500 uppercase tracking-wider">{{ p.formats }}</span>
+                                <header class="flex items-center justify-between gap-2 mb-4">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                        <span cv-html.raw="p.iconSvg"
+                                              class="text-zinc-200 inline-flex shrink-0"
+                                              aria-hidden="true"></span>
+                                        <h3 class="text-zinc-100 font-semibold truncate">{{ p.name }}</h3>
+                                    </div>
+                                    <span class="text-[10px] text-zinc-500 uppercase tracking-wider shrink-0">{{ p.formats }}</span>
                                 </header>
                                 <pre class="text-[11px] text-zinc-300 bg-zinc-950 border border-zinc-800 rounded p-3 leading-relaxed overflow-x-auto whitespace-pre-wrap break-all flex-1">{{ p.cmd }}</pre>
-                                <footer class="mt-4 flex items-center justify-between text-xs">
+                                <footer class="mt-4 flex items-start justify-between gap-3 text-xs">
                                     <a :href="release" target="_blank" rel="noopener"
-                                       class="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1">
+                                       class="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1 shrink-0">
                                         <span>Download</span>
                                         <span cv-html.raw="icons.externalLink" aria-hidden="true"></span>
                                     </a>
-                                    <span class="text-zinc-500">{{ p.note }}</span>
+                                    <span class="text-zinc-500 text-right">{{ p.note }}</span>
                                 </footer>
                             </article>
                         </div>
@@ -351,21 +379,24 @@ createApp({ ... }).mount(<span class="text-emerald-300">'#app'</span>);</pre>
         platforms: [
             {
                 name: 'Linux',
+                iconSvg: OS_ICONS.linux,
                 formats: 'rpm · deb · AppImage',
                 cmd: `sudo dnf install ./Courvux\\ Notepad-${VERSION}-1.x86_64.rpm`,
                 note: 'Fedora 40+',
             },
             {
                 name: 'macOS',
+                iconSvg: OS_ICONS.macos,
                 formats: 'dmg · app',
-                cmd: `mv "Courvux Notepad.app" /Applications/`,
-                note: 'Apple Silicon',
+                cmd: `# Mount the .dmg, drag Courvux Notepad.app to Applications.\n# First launch: right-click → Open (unsigned).`,
+                note: 'Universal (Apple Silicon + Intel)',
             },
             {
                 name: 'Windows',
-                formats: 'msi · nsis',
-                cmd: `# build locally with:\npnpm tauri build`,
-                note: 'WebView2',
+                iconSvg: OS_ICONS.windows,
+                formats: 'msi · exe',
+                cmd: `# Double-click the .msi installer (recommended), or:\nmsiexec /i "Courvux Notepad_${VERSION}_x64_en-US.msi"`,
+                note: 'WebView2 — SmartScreen warns on first run',
             },
         ],
     },
