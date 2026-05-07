@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="version: 0.9.3"      src="https://img.shields.io/badge/version-0.9.3-blue">
+  <img alt="version: 0.9.4"      src="https://img.shields.io/badge/version-0.9.4-blue">
   <img alt="courvux: 0.7.1"      src="https://img.shields.io/badge/courvux-0.7.1-success">
   <img alt="tauri: 2"            src="https://img.shields.io/badge/tauri-2-orange">
   <img alt="license: MIT"        src="https://img.shields.io/badge/license-MIT-lightgrey">
