@@ -267,6 +267,11 @@ createApp({ ... }).mount(<span class="text-emerald-300">'#app'</span>);</pre>
                         <a :href="links.courvux" target="_blank" rel="noopener" class="hover:text-zinc-300">Courvux</a>
                     </nav>
                 </div>
+                <p class="max-w-6xl mx-auto px-4 sm:px-6 pb-6 text-xs text-zinc-500 text-center">
+                    This landing is built with
+                    <a :href="links.courvux" target="_blank" rel="noopener" class="text-emerald-400 hover:text-emerald-300 underline underline-offset-4">Courvux</a>
+                    itself — 382 lines of <code class="text-zinc-400">main.js</code>, no extra frameworks.
+                </p>
             </footer>
         </div>
     `,
