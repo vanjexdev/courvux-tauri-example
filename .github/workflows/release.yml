@@ -1,0 +1,101 @@
+name: Release
+
+# Triggers a multi-platform Tauri build whenever you push a tag like `v0.9.4`
+# or `v1.0.0`. The workflow creates a draft GitHub Release with bundles for
+# Linux (.AppImage, .deb, .rpm), macOS (.dmg, universal), and Windows (.msi, .exe).
+#
+# To release a new version:
+#   git tag v0.9.4
+#   git push origin v0.9.4
+#
+# Then go to https://github.com/<you>/<repo>/releases, find the draft, edit
+# the description, and publish.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Lets the workflow create releases and upload assets to the repo.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target universal-apple-darwin'
+          - platform: 'ubuntu-22.04'
+            args: ''
+          - platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # pnpm 10 because the repo's `pnpm-lock.yaml` was generated with
+      # 10.x and `--frozen-lockfile` complains when a v9 runner reads
+      # a v10 lockfile.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      # `libayatana-appindicator3-dev` is the modern (Ayatana) fork that
+      # Tauri 2 prefers; the legacy `libappindicator3-dev` package fails
+      # the CMake feature checks on ubuntu-22.04. `libssl-dev` is needed
+      # by some transitive Rust crates that build against system OpenSSL.
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Courvux Notepad ${{ github.ref_name }}'
+          releaseBody: |
+            See the full changelog in the README.
+
+            **Downloads below.** Pick the bundle for your OS:
+            - **macOS**: `.dmg` — universal binary (Apple Silicon + Intel)
+            - **Windows**: `.msi` (recommended) or `.exe`
+            - **Linux**: `.AppImage` (portable), `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL)
+
+            Builds are unsigned. macOS users may need to right-click → Open
+            on first launch; Windows users may see a SmartScreen warning.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
