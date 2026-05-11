@@ -28,7 +28,12 @@ jobs:
         include:
           - platform: 'macos-latest'
             args: '--target universal-apple-darwin'
-          - platform: 'ubuntu-22.04'
+          # ubuntu-24.04 ships WebKitGTK 2.44+, matching the stack on
+          # rolling-release distros (Arch / CachyOS / Fedora rolling). The
+          # older 22.04 image ships WebKitGTK 2.36, whose EGL/DMA-BUF code
+          # path mismatches modern Mesa and crashes the webview on launch
+          # with `Could not create default EGL display: EGL_BAD_PARAMETER`.
+          - platform: 'ubuntu-24.04'
             args: ''
           - platform: 'windows-latest'
             args: ''
@@ -63,10 +68,10 @@ jobs:
 
       # `libayatana-appindicator3-dev` is the modern (Ayatana) fork that
       # Tauri 2 prefers; the legacy `libappindicator3-dev` package fails
-      # the CMake feature checks on ubuntu-22.04. `libssl-dev` is needed
-      # by some transitive Rust crates that build against system OpenSSL.
+      # the CMake feature checks. `libssl-dev` is needed by some transitive
+      # Rust crates that build against system OpenSSL.
       - name: Install Linux system deps
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -83,6 +88,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `linuxdeploy` ships an old `strip` binary inside its AppImage
+          # that doesn't recognize the `.relr.dyn` section emitted by
+          # recent glibc — the AppImage step aborts mid-bundle with
+          # `unknown type [0x13] section .relr.dyn`. Skipping the strip
+          # is safe because system libs are already stripped, and dodges
+          # the failure on any Ubuntu/glibc combo where it surfaces.
+          NO_STRIP: 'true'
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Courvux Notepad ${{ github.ref_name }}'
@@ -99,3 +111,36 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Bake `WEBKIT_DISABLE_DMABUF_RENDERER=1` into the AppImage's AppRun
+      # so users on configs that mismatch the runner's EGL stack (NVIDIA
+      # proprietary, Hyprland, some Wayland compositors) don't crash at
+      # launch with `Could not create default EGL display`. The fallback
+      # variable form (`${VAR:-1}`) lets a user reactivate the DMA-BUF
+      # renderer with `WEBKIT_DISABLE_DMABUF_RENDERER=0 ./app.AppImage`
+      # if it works on their machine.
+      #
+      # `tauri-action` already uploaded the original (unpatched) AppImage
+      # to the draft release in the previous step, so this step rebuilds
+      # the AppImage with the patched AppRun and overwrites the release
+      # asset via `gh release upload --clobber`. Net effect: the asset
+      # users download is the patched one.
+      - name: Patch AppImage with EGL workaround
+        if: matrix.platform == 'ubuntu-24.04'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd src-tauri/target/release/bundle/appimage
+          APPIMAGE=$(ls *.AppImage | head -n 1)
+          ./"$APPIMAGE" --appimage-extract >/dev/null
+          # Insert the env var on line 2 (right after the shebang) so the
+          # webview process inherits it before WebKitGTK initializes.
+          sed -i '2i export WEBKIT_DISABLE_DMABUF_RENDERER=${WEBKIT_DISABLE_DMABUF_RENDERER:-1}' squashfs-root/AppRun
+          wget -q -O appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool squashfs-root "$APPIMAGE"
+          rm -rf squashfs-root appimagetool
+          # Overwrite the draft release's AppImage with the patched build.
+          gh release upload "${{ github.ref_name }}" "$APPIMAGE" --clobber --repo "${{ github.repository }}"
